@@ -83,9 +83,7 @@ ROLES = {
     },
     "department_hr_manager": {
         "scope": "assigned_department",
-        "grants": _grants(aggregate=CATEGORIES,
-                           individual=("other_basic", "sensitive_basic", "measurement_report",
-                                       "performance_rating")),
+        "grants": _grants(aggregate=CATEGORIES),
     },
     "department_manager": {
         "scope": "assigned_department",

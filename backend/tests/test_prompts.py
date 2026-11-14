@@ -21,6 +21,13 @@ def test_company_wide_and_individual_only():
            "individual records only (no statistics)" in text
 
 
+def test_department_hr_manager_has_only_scoped_statistics():
+    text = prompts.describe_user(DEMO_USERS["dept_hr_1"], POLICY)
+    assert "Authorized departments: Sales." in text
+    assert text.count(": statistics only") == 5
+    assert "individual records" not in text
+
+
 def test_employee_has_no_access():
     assert "no access to HR data" in prompts.describe_user(DEMO_USERS["emp_1"], POLICY)
 
