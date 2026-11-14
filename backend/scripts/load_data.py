@@ -28,7 +28,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from pymongo import ASCENDING
-from sklearn.datasets import fetch_openml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `app` importable
 
@@ -44,6 +43,8 @@ LONG_AGO = datetime(2000, 1, 1, tzinfo=timezone.utc)
 def read_dataset() -> pd.DataFrame:
     """Local CSV if present; otherwise download from OpenML and cache it."""
     if not CSV_PATH.exists():
+        from sklearn.datasets import fetch_openml
+
         print(f"downloading OpenML {OPENML_ID} ...")
         df = fetch_openml(data_id=OPENML_ID, as_frame=True).frame
         CSV_PATH.parent.mkdir(parents=True, exist_ok=True)

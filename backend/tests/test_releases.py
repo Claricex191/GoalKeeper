@@ -14,6 +14,7 @@ from app.clock import DEMO_START, NEW_HIRE_START
 from app.memory.releases import (load_history, make_label, record_then_release,
                                  release_targets, retention_days)
 from app.query.executor import run_query
+from app.policy.defaults import POLICY as DEFAULT_POLICY
 from app.schemas import Cell, Decision, StructuredQuery
 from app.users import DEMO_USERS
 
@@ -21,6 +22,7 @@ MON, THU = DEMO_START, NEW_HIRE_START
 MGR1, MGR2, MGR3 = DEMO_USERS["mgr_1"], DEMO_USERS["mgr_2"], DEMO_USERS["mgr_3"]
 
 POLICY = {
+    **DEFAULT_POLICY,
     "version": 1,
     "sensitive_targets": ["MonthlyIncome", "PerformanceRating", "Attrition", "JobSatisfaction"],
     "memory": {"scope": "team", "retention_days": 365,
@@ -85,7 +87,7 @@ def entry(project, who, status="allowed"):
 
 
 def record_monday(db, project):
-    cells = run_query(db, SALES_MGR_AVG, MON)
+    cells = run_query(db, SALES_MGR_AVG, MON, MGR1, POLICY)
     n = record_then_release(db, Decision(status="allowed", cells=cells), SALES_MGR_AVG,
                             MGR1, project, "s1", MON, POLICY, entry(project, MGR1))
     assert n == 1
@@ -139,7 +141,7 @@ def test_small_cell_rejected_and_nothing_written(db, project):
 def test_nothing_to_remember_still_audited(db, project):
     plain = StructuredQuery(filters=[{"col": "Department", "op": "=", "val": "Sales"}],
                             metric="count")
-    cells = run_query(db, plain, MON)
+    cells = run_query(db, plain, MON, MGR1, POLICY)
     n = record_then_release(db, Decision(status="allowed", cells=cells), plain, MGR1,
                             project, "s1", MON, POLICY, entry(project, MGR1))
     assert n == 0

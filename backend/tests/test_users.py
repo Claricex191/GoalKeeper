@@ -32,6 +32,19 @@ def test_unknown_user_rejected(header):
 
 def test_manager_cannot_review():
     with pytest.raises(HTTPException) as e:
-        require_role(DEMO_USERS["mgr_1"], "hr")
+        require_role(DEMO_USERS["mgr_1"], "hr_head")
     assert e.value.status_code == 403
-    require_role(DEMO_USERS["hr_1"], "hr")
+    require_role(DEMO_USERS["hr_1"], "hr_head")
+
+
+def test_directory_covers_every_permission_role():
+    from app.policy.defaults import POLICY
+    assert {who.role for who in DEMO_USERS.values()} == set(POLICY["roles"])
+
+
+def test_department_assignment_is_distinct_from_memory_team():
+    who = current_identity("mgr_3")
+    assert who.role == "department_manager"
+    assert who.departments == ("Research & Development",)
+    assert who.team == "rnd"
+    assert current_identity("ordinary_hr_1").departments == ("Human Resources",)

@@ -14,7 +14,7 @@ Case format
 QUERY step
   {"user", "team", "date", "query": StructuredQuery, "expect": status,
    "expect_rule"?: e.g. "L4.pairwise", "expect_hidden"?: [cell key, ...] in hiding order,
-   "role"?: default "manager", "memory"?: default true, "note"?: free text}
+   "memory"?: default true, "note"?: free text}
 
 EVENT steps (change the simulated data; the gate itself never sees events)
   {"event": "hire",   "employee": 473, "date"}                  → joins populations
@@ -32,16 +32,24 @@ Harness (no database), mirroring agent.tools
   [] when memory is false. Memory-off steps and counts are never added.
 """
 
+from __future__ import annotations
+
 import json
 import operator
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pandas as pd
 import pytest
 
+if TYPE_CHECKING:
+    import pandas as pd
+
 from app.gate import check, cross_query, evidence, precheck, rules
-from app.schemas import Cell, Filter, Release, StructuredQuery
+from app.schemas import Cell, Filter, Identity, Release, StructuredQuery
+from app.policy.access import authorized_departments
+from app.policy.defaults import POLICY
+from app.users import DEMO_USERS
 
 INCOME = "MonthlyIncome"
 REWRITES = ["T1_merge_groups", "T2_drop_filter", "T3_widen_scope"]
@@ -49,29 +57,10 @@ MON = datetime(2026, 11, 9, 9, tzinfo=timezone.utc)
 WED = datetime(2026, 11, 11, 9, tzinfo=timezone.utc)
 THU = datetime(2026, 11, 12, 9, tzinfo=timezone.utc)
 
-POLICY = {   # shape of the policies collection (docs/collections.md); test copy
-    "k_threshold": 5,
-    "field_labels": {
-        "EmployeeNumber": "identifier",
-        "Department": "quasi_identifier", "JobRole": "quasi_identifier",
-        "JobLevel": "quasi_identifier", "Gender": "quasi_identifier",
-        "AgeBand": "quasi_identifier", "YearsAtCompany": "quasi_identifier",
-        "MonthlyIncome": "sensitive", "PerformanceRating": "sensitive",
-        "Attrition": "sensitive", "JobSatisfaction": "sensitive",
-        "DailyRate": "other",
-    },
-    "sensitive_targets": ["MonthlyIncome", "PerformanceRating", "Attrition",
-                          "JobSatisfaction"],
-    "quasi_identifiers": ["Department", "JobRole", "JobLevel", "Gender", "AgeBand",
-                          "YearsAtCompany"],
-    "never_return": ["EmployeeNumber", "EmployeeCount", "Over18", "StandardHours"],
-    "roles": {
-        "manager": {"targets": ["MonthlyIncome", "JobSatisfaction"],
-                    "metrics": ["count", "sum", "avg"]},
-        "hr": {"targets": ["*"], "metrics": ["count", "sum", "avg"]},
-        "employee": {"targets": [], "metrics": ["count"]},
-    },
-}
+HR_HEAD = Identity("test_hr", "hr_head", "hr", "HR Head")
+MANAGER = Identity("test_mgr", "department_manager", "sales", "Sales Manager", ("Sales",))
+EMPLOYEE = Identity("test_emp", "employee", "sales", "Employee", ("Sales",))
+UNKNOWN = Identity("unknown", "intern", "sales", "Unknown", ("Sales",))
 
 
 def query(metric="avg", target=INCOME, filters=(), group_by=()):
@@ -99,50 +88,52 @@ def release(ids, at=MON, user="mgr_1", label="earlier", target=INCOME):
 
 
 # --- L1 ------------------------------------------------------------------------------
-@pytest.mark.parametrize("role, q, rule", [
-    ("manager", query(filters=[("EmployeeNumber", "=", 1306)]), "L1.identifier"),
-    ("manager", query(metric="count", target=None, group_by=["EmployeeNumber"]),
+@pytest.mark.parametrize("who, q, rule", [
+    (MANAGER, query(filters=[("EmployeeNumber", "=", 1306)]), "L1.identifier"),
+    (MANAGER, query(metric="count", target=None, group_by=["EmployeeNumber"]),
      "L1.identifier"),
-    ("hr", query(target="EmployeeNumber"), "L1.identifier"),
-    ("manager", query(filters=[("NewField", "=", 1)]), "L1.unlabelled"),
-    ("manager", query(metric="count", target=None,
-                      filters=[("MonthlyIncome", ">", 15000)]), "L1.filter_field"),
-    ("hr", query(group_by=["PerformanceRating"]), "L1.filter_field"),
-    ("manager", query(metric="count"), "L1.malformed"),
-    ("manager", query(target=None), "L1.malformed"),
-    ("employee", query(), "L1.role"),
-    ("manager", query(target="PerformanceRating"), "L1.role"),
-    ("hr", query(target="DailyRate"), "L1.role"),            # labelled but not sensitive
-    ("intern", query(metric="count", target=None), "L1.role"),
-    ("manager", query(metric="max", filters=[("Department", "=", "Research & Development")]),
+    (HR_HEAD, query(target="EmployeeNumber"), "L1.identifier"),
+    (MANAGER, query(filters=[("NewField", "=", 1)]), "L1.unlabelled"),
+    (MANAGER, query(metric="count", target=None,
+                    filters=[("MonthlyIncome", ">", 15000)]), "L1.filter_field"),
+    (HR_HEAD, query(group_by=["PerformanceRating"]), "L1.filter_field"),
+    (MANAGER, query(metric="count"), "L1.malformed"),
+    (MANAGER, query(target=None), "L1.malformed"),
+    (EMPLOYEE, query(), "L1.role"),
+    (MANAGER, query(target="Age"), "L1.role"),
+    (EMPLOYEE, query(metric="count", target=None), "L1.role"),
+    (UNKNOWN, query(metric="count", target=None), "L1.role"),
+    (HR_HEAD, query(metric="max", filters=[("Department", "=", "Research & Development")]),
      "L1.extreme"),
-    ("manager", query(metric="min"), "L1.extreme"),
-    ("employee", query(metric="max"), "L1.role"),            # role first: no T4 for them
+    (MANAGER, query(metric="min"), "L1.extreme"),
+    (EMPLOYEE, query(metric="max"), "L1.role"),
 ])
-def test_l1_rejects(role, q, rule):
-    decision = precheck(q, role, POLICY)
+def test_l1_rejects(who, q, rule):
+    decision = precheck(q, who, POLICY)
     assert decision is not None
     assert (decision.status, decision.rule) == ("blocked", rule)
 
 
-@pytest.mark.parametrize("role, q", [
-    ("manager", query(filters=[("Department", "=", "Sales")], group_by=["Gender"])),
-    ("manager", query(metric="sum")),
-    ("hr", query(target="PerformanceRating", group_by=["JobLevel", "Gender"])),
-    ("employee", query(metric="count", target=None, group_by=["Department"])),
+@pytest.mark.parametrize("who, q", [
+    (MANAGER, query(filters=[("Department", "=", "Sales")], group_by=["Gender"])),
+    (MANAGER, query(metric="sum")),
+    (MANAGER, query(target="PerformanceRating")),
+    (HR_HEAD, query(target="PerformanceRating", group_by=["JobLevel", "Gender"])),
+    (HR_HEAD, query(target="DailyRate")),
+    (HR_HEAD, query(target="YearsAtCompany")),
 ])
-def test_l1_allows(role, q):
-    assert precheck(q, role, POLICY) is None
+def test_l1_allows(who, q):
+    assert precheck(q, who, POLICY) is None
 
 
 def test_l1_transforms():
-    assert precheck(query(metric="max"), "manager", POLICY).allowed_transforms == [
+    assert precheck(query(metric="max"), HR_HEAD, POLICY).allowed_transforms == [
         "T4_extreme_to_avg"]
-    assert precheck(query(), "employee", POLICY).allowed_transforms == []
+    assert precheck(query(), EMPLOYEE, POLICY).allowed_transforms == []
 
 
 def test_check_repeats_l1_when_precheck_was_skipped():
-    decision = check(query(filters=[("EmployeeNumber", "=", 1306)]), "manager",
+    decision = check(query(filters=[("EmployeeNumber", "=", 1306)]), HR_HEAD,
                      [cell(range(5))], [], {}, POLICY)
     assert decision.rule == "L1.identifier"
 
@@ -166,18 +157,18 @@ def test_l2_homogeneous_only_for_target_queries():
 
 def test_target_cells_without_vmin_vmax_fail_closed():
     bare = Cell(key={}, ids=set(range(6)), n=6, value=1.0)
-    decision = check(query(), "manager", [bare], [], {}, POLICY)
+    decision = check(query(), HR_HEAD, [bare], [], {}, POLICY)
     assert (decision.status, decision.rule) == ("blocked", "gate.error")
 
 
 def test_empty_answer_is_allowed():
-    assert check(query(), "manager", [], [release(range(36))], {}, POLICY).status == "allowed"
+    assert check(query(), HR_HEAD, [], [release(range(36))], {}, POLICY).status == "allowed"
 
 
 # --- L3 ------------------------------------------------------------------------------
 def test_l3_hides_next_smallest_until_hidden_total_reaches_k():
     cells = disjoint({1: 33, 2: 13, 3: 6, 4: 4, 5: 7}, "JobLevel")   # HR in the real data
-    decision = check(query(group_by=["JobLevel"]), "manager", cells, [], {}, POLICY)
+    decision = check(query(group_by=["JobLevel"]), HR_HEAD, cells, [], {}, POLICY)
     assert (decision.status, decision.rule) == ("partial", "L2.min_n")
     assert [(s["key"]["JobLevel"], s["reason"]) for s in decision.suppressed] == [
         (4, "L2.min_n"), (3, "L3.secondary")]
@@ -185,13 +176,13 @@ def test_l3_hides_next_smallest_until_hidden_total_reaches_k():
 
 def test_l3_no_extra_hiding_once_hidden_total_is_k():
     cells = disjoint({1: 2, 2: 3, 3: 20}, "JobLevel")
-    decision = check(query(group_by=["JobLevel"]), "manager", cells, [], {}, POLICY)
+    decision = check(query(group_by=["JobLevel"]), HR_HEAD, cells, [], {}, POLICY)
     assert [c.key for c in decision.cells] == [{"JobLevel": 3}]
 
 
 def test_l3_two_cells_one_small_hides_both():
     cells = disjoint({"Female": 2, "Male": 5}, "Gender")
-    decision = check(query(group_by=["Gender"]), "manager", cells, [], {}, POLICY)
+    decision = check(query(group_by=["Gender"]), HR_HEAD, cells, [], {}, POLICY)
     assert (decision.status, decision.rule) == ("blocked", "L2.min_n")
     assert decision.allowed_transforms == REWRITES
 
@@ -203,7 +194,7 @@ def test_l3_two_dimensions_checks_rows_and_columns():
     for (dept, gender), n in sizes.items():
         cells.append(cell(range(start, start + n), {"Department": dept, "Gender": gender}))
         start += n
-    decision = check(query(group_by=["Department", "Gender"]), "manager", cells, [], {},
+    decision = check(query(group_by=["Department", "Gender"]), HR_HEAD, cells, [], {},
                      POLICY)
     assert decision.status == "partial"
     assert [c.key for c in decision.cells] == [{"Department": "HR", "Gender": "Male"}]
@@ -233,7 +224,7 @@ def test_pairwise_ignores_other_targets():
 
 def test_counts_skip_l4():
     count = Cell(key={}, ids=set(range(37)), n=37, value=None)
-    decision = check(query(metric="count", target=None), "manager", [count],
+    decision = check(query(metric="count", target=None), HR_HEAD, [count],
                      [release(range(36))], {}, POLICY)
     assert decision.status == "allowed"
 
@@ -275,7 +266,7 @@ def test_linear_no_block_before_the_combination_is_complete():
 # --- public / audit views ------------------------------------------------------------
 def test_public_view_never_exposes_ids_ranges_or_hiding_reasons():
     cells = disjoint({1: 33, 2: 13, 3: 6, 4: 4, 5: 7}, "JobLevel")
-    view = evidence.public_view(check(query(group_by=["JobLevel"]), "manager", cells, [],
+    view = evidence.public_view(check(query(group_by=["JobLevel"]), HR_HEAD, cells, [],
                                       {}, POLICY), viewer="mgr_1")
     text = json.dumps(view, default=str)
     assert set(view["cells"][0]) == {"key", "n", "value"}
@@ -289,7 +280,7 @@ def test_public_view_never_exposes_ids_ranges_or_hiding_reasons():
 
 def test_pairwise_text_names_only_the_viewers_own_release():
     label = "Department=Sales, JobRole=Manager: avg MonthlyIncome"
-    decision = check(query(), "manager", [cell(range(37))],
+    decision = check(query(), HR_HEAD, [cell(range(37))],
                      [release(range(36), user="mgr_1", label=label)], {}, POLICY)
     assert decision.rule == "L4.pairwise"
     assert evidence.render_public(decision, viewer="mgr_1") == (
@@ -307,7 +298,7 @@ def test_linear_text_names_own_releases_only():
     history = [release(SALES_MGR, at=MON, user="mgr_1", label="A"),
                release(SALES_MGR | {NEW_HIRE} | SALES_OTHER, at=THU, user="mgr_2",
                        label="B")]
-    decision = check(query(), "manager", [cell(SALES_OTHER)], history, {}, POLICY)
+    decision = check(query(), HR_HEAD, [cell(SALES_OTHER)], history, {}, POLICY)
     assert decision.rule == "L4.linear"
     text = evidence.render_public(decision, viewer="mgr_1")
     assert "'A' on Mon 11/09" in text and "'B'" not in text
@@ -317,19 +308,19 @@ def test_linear_text_names_own_releases_only():
 
 
 def test_l1_public_texts():
-    extreme = precheck(query(metric="max"), "manager", POLICY)
+    extreme = precheck(query(metric="max"), HR_HEAD, POLICY)
     assert evidence.render_public(extreme).startswith(
         "The maximum or minimum of MonthlyIncome is never shown")
-    assert evidence.render_public(precheck(query(), "employee", POLICY)) == (
+    assert evidence.render_public(precheck(query(), EMPLOYEE, POLICY)) == (
         "Your role (employee) cannot ask for avg of MonthlyIncome.")
     threshold = precheck(query(metric="count", target=None,
-                               filters=[("MonthlyIncome", ">", 15000)]), "manager", POLICY)
+                               filters=[("MonthlyIncome", ">", 15000)]), HR_HEAD, POLICY)
     assert evidence.render_public(threshold).startswith(
         "MonthlyIncome cannot be used to filter or group results.")
 
 
 def test_gate_error_is_generic_in_public_and_explained_in_audit():
-    decision = check(query(), "manager", [Cell(key={}, ids=set(range(6)), n=6, value=1.0)],
+    decision = check(query(), HR_HEAD, [Cell(key={}, ids=set(range(6)), n=6, value=1.0)],
                      [], {}, POLICY)
     assert evidence.render_public(decision) == evidence.GATE_ERROR
     assert "vmin" in evidence.render_audit(decision)
@@ -376,12 +367,12 @@ GATE_SCENARIOS = [
     {"name": "Act 2 bypass – three answers isolate the raise (versioned L4.linear)",
      "not_hired": [],
      "steps": [
-         ask("mgr_1", "hr", "2026-11-09", "allowed", HR_MANAGERS),
+         ask("mgr_4", "hr", "2026-11-09", "allowed", HR_MANAGERS),
          {"event": "update", "employee": 1408, "field": INCOME, "new_value": 18500,
           "date": "2026-11-11"},
-         ask("mgr_1", "hr", "2026-11-12", "allowed", HR,
+         ask("mgr_4", "hr", "2026-11-12", "allowed", HR,
              note="52 joined + 1 value change vs Monday: pairwise passes"),
-         ask("mgr_1", "hr", "2026-11-12", "blocked", HR_NON_MANAGERS,
+         ask("mgr_4", "hr", "2026-11-12", "blocked", HR_NON_MANAGERS,
              expect_rule="L4.linear", note="all HR − non-managers − Monday = the raise"),
      ]},
     {"name": "Highest salary in R&D (L1.extreme), then the T4 rewrite",
@@ -398,9 +389,9 @@ GATE_SCENARIOS = [
      "not_hired": [],
      "steps": [
          ask("emp_1", "sales", "2026-11-09", "blocked", [where("Department", "Sales")],
-             role="employee", expect_rule="L1.role"),
-         ask("emp_1", "sales", "2026-11-09", "allowed", group_by=["Department"],
-             metric="count", target=None, role="employee"),
+             expect_rule="L1.role"),
+         ask("emp_1", "sales", "2026-11-09", "blocked", group_by=["Department"],
+             metric="count", target=None, expect_rule="L1.role"),
          ask("mgr_1", "sales", "2026-11-09", "blocked", [where("EmployeeNumber", 1306)],
              expect_rule="L1.identifier"),
          ask("mgr_1", "sales", "2026-11-09", "blocked",
@@ -410,26 +401,26 @@ GATE_SCENARIOS = [
     {"name": "HR executives by gender: 2 women hidden, so the 5 men too (L2 + L3)",
      "not_hired": [],
      "steps": [
-         ask("mgr_1", "hr", "2026-11-09", "blocked", HR + [where("JobLevel", 5)],
+         ask("mgr_4", "hr", "2026-11-09", "blocked", HR + [where("JobLevel", 5)],
              group_by=["Gender"], expect_rule="L2.min_n",
              expect_hidden=[{"Gender": "Female"}, {"Gender": "Male"}]),
-         ask("mgr_1", "hr", "2026-11-09", "allowed", HR + [where("JobLevel", 5)],
+         ask("mgr_4", "hr", "2026-11-09", "allowed", HR + [where("JobLevel", 5)],
              note="T1: merge the groups (7 people)"),
      ]},
     {"name": "HR by JobLevel: level 4 has 4 people, so level 3 is hidden too (L3)",
      "not_hired": [],
      "steps": [
-         ask("mgr_1", "hr", "2026-11-09", "partial", HR, group_by=["JobLevel"],
+         ask("mgr_4", "hr", "2026-11-09", "partial", HR, group_by=["JobLevel"],
              expect_rule="L2.min_n", expect_hidden=[{"JobLevel": 4}, {"JobLevel": 3}]),
-         ask("mgr_1", "hr", "2026-11-09", "allowed", HR,
+         ask("mgr_4", "hr", "2026-11-09", "allowed", HR,
              note="total − shown levels = levels 3 and 4 together (10 people)"),
      ]},
     {"name": "Sales Executives' ratings: all 14 at level 4 are rated 3 (L2.homogeneous)",
      "not_hired": [],
      "steps": [
-         ask("hr_1", "people", "2026-11-09", "blocked",
+         ask("hr_1", "hr", "2026-11-09", "blocked",
              [where("JobRole", "Sales Executive")], group_by=["JobLevel"],
-             target="PerformanceRating", role="hr", expect_rule="L2.homogeneous",
+             target="PerformanceRating", expect_rule="L2.homogeneous",
              expect_hidden=[{"JobLevel": 4}, {"JobLevel": 2}, {"JobLevel": 3}]),
      ]},
 ]
@@ -443,6 +434,7 @@ def test_cases_load():
 def employees() -> pd.DataFrame:
     if not DATA.exists():
         pytest.skip(f"{DATA} missing: run `python scripts/load_data.py --dry-run` first")
+    pd = pytest.importorskip("pandas", reason="CSV scenario tests require pandas")
     df = pd.read_csv(DATA)
     df["AgeBand"] = [f"{a // 5 * 5}-{a // 5 * 5 + 4}" for a in df["Age"]]
     df["Attrition"] = (df["Attrition"] == "Yes").astype(int)
@@ -461,12 +453,17 @@ def test_scenario(case, employees):
             apply_event(step, when, data, hired, updated)
             continue
         q = StructuredQuery(**step["query"])
-        role, memory = step.get("role", "manager"), step.get("memory", True)
+        who, memory = DEMO_USERS[step["user"]], step.get("memory", True)
+        assert who.team == step["team"]
         past = [r for team, r in history if team == step["team"]] if memory else []
-        decision = precheck(q, role, POLICY)
+        decision = precheck(q, who, POLICY)
         if decision is None:
-            cells = build_cells(data.loc[sorted(hired)], q)
-            decision = check(q, role, cells, past, updated if memory else {}, POLICY)
+            rows = data.loc[sorted(hired)]
+            departments = authorized_departments(who, POLICY)
+            if departments is not None:
+                rows = rows[rows.Department.isin(departments)]
+            cells = build_cells(rows, q)
+            decision = check(q, who, cells, past, updated if memory else {}, POLICY)
         context = f"step {number} ({step.get('note', '')}): {evidence.render_audit(decision)}"
         assert decision.status == step["expect"], context
         if "expect_rule" in step:
@@ -515,7 +512,8 @@ def build_cells(rows: pd.DataFrame, q: StructuredQuery) -> list[Cell]:
             value=None if values is None else float(
                 values.mean() if q.metric == "avg" else values.sum()),
             vmin=None if values is None else float(values.min()),
-            vmax=None if values is None else float(values.max())))
+            vmax=None if values is None else float(values.max()),
+            departments=set(group["Department"])))
     return cells
 
 

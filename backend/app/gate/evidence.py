@@ -30,6 +30,8 @@ PUBLIC_L1 = {
                        "Allowed: {allowed_fields}.",
     "L1.malformed": "A count takes no target field; sum and average need one.",
     "L1.role": "Your role ({role}) cannot ask for {what}.",
+    "L1.scope": "This request is outside your authorized employee scope.",
+    "L1.metric": "This statistic is not applicable to {fields}.",
     "L1.extreme": "The maximum or minimum of {target} is never shown: it is one person's "
                   "exact value. An average by group, for example by JobLevel, can be "
                   "shown instead.",
@@ -41,14 +43,14 @@ def public_rule(decision: Decision) -> str | None:
     """Hide suppression reasons and historical timestamp ambiguity in public rule ids."""
     if decision.rule in HIDING_RULES:
         return "L2"
-    if decision.rule == "L4.history":
+    if decision.rule in ("L4.history", "L4.nonlinear"):
         return "L4"
     return decision.rule
 
 
 def public_view(decision: Decision, viewer: str | None = None) -> dict:
     """What the LLM and the trace may see. `viewer` = the user asking."""
-    return {
+    view = {
         "status": decision.status,
         "rule": public_rule(decision),
         "evidence_text": render_public(decision, viewer),
@@ -56,6 +58,12 @@ def public_view(decision: Decision, viewer: str | None = None) -> dict:
         "hidden": [s["key"] for s in decision.suppressed],
         "allowed_transforms": list(decision.allowed_transforms),
     }
+    if decision.mode == "individual":
+        if len(decision.record_indices) != len(decision.records):
+            raise ValueError("individual records require request indices")
+        view["records"] = [{"request_index": index, "values": dict(record.values)}
+                           for index, record in zip(decision.record_indices, decision.records)]
+    return view
 
 
 def audit_view(decision: Decision) -> dict:
@@ -75,7 +83,7 @@ def render_public(decision: Decision, viewer: str | None = None) -> str | None:
     rule, ev = decision.rule, decision.evidence or {}
     if rule is None:
         return None
-    if rule == "L4.history":
+    if rule in ("L4.history", "L4.nonlinear"):
         return "This answer cannot be safely released alongside earlier answers."
     if rule in HIDING_RULES:
         keys = [s["key"] for s in decision.suppressed]
@@ -107,6 +115,8 @@ def render_audit(decision: Decision) -> str | None:
         return None
     if rule == "L4.history":
         return f"L4.history: historical value versions are ambiguous ({ev['reason']})."
+    if rule == "L4.nonlinear":
+        return "L4.nonlinear: overlapping median or categorical disclosures require a nonlinear privacy check."
     if rule in HIDING_RULES:
         return f"{rule}: hidden " + "; ".join(
             f"{_key(s['key'])}: {s['reason']} (n={s['n']})" for s in decision.suppressed)
