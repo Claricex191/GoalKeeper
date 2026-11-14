@@ -75,15 +75,37 @@ python -m venv .venv && source .venv/bin/activate   # Python 3.11 or 3.12
 pip install -r requirements.txt
 cp .env.example .env                                 # fill in keys
 python scripts/load_data.py
-python scripts/seed_policies.py
+python scripts/seed_policies.py --approved-by "hr_1"
+python scripts/warmup.py                            # clean Monday, once per reset
 uvicorn app.main:app --reload
 
 cd ../frontend
 npm install && npm run dev
 ```
 
-Atlas Vector Search index on `precedents.embedding` is created in the Atlas UI
+The Atlas Vector Search index on `precedents.embedding` is ensured at startup
 (definition in `app/db.py`).
+
+### Demo controls and warmup
+
+The admin controls and `scripts/warmup.py` use the executor, privacy gate and transactional
+release writer directly, without an LLM. Warmup refuses existing project history,
+modified employees or a clock beyond Monday. Use `POST /admin/reset` to prepare a new
+run: it restores employees from the local CSV, clears demo memory and review requests,
+and seeds the Sales and HR manager averages for Monday in one transaction. The audit
+ledger remains intact. The CSV must already exist on the API host; reset never downloads
+data or drops the employees collection. MongoDB must support transactions (Atlas or a
+replica set).
+
+For both scenarios in one run: reset, advance **2 days**, update employee **1408**'s
+`MonthlyIncome` to **18500**, then advance **1 day**. Ask the Sales Manager question as
+`mgr_1`, and switch to **`mgr_4`** for the HR Manager question so each reads the correct
+team's Monday history. These controls accept all authenticated demo identities;
+policy management is HR-only. See [frontend/API.md](frontend/API.md) for errors and
+reset semantics.
+
+The real `/chat`, agent tool handlers and reviewer workflow remain implementation
+stubs. `npm run dev:mock` provides the scripted two-scenario UI rehearsal.
 
 ### Your own `.env` (keys and connection string)
 

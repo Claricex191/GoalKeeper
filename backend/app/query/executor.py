@@ -11,6 +11,8 @@ can fix the query (unknown column, wrong value type, non-numeric target...).
 """
 from datetime import datetime
 
+from bson.int64 import Int64
+
 from app.schemas import Cell, StructuredQuery
 
 OPS = {"=": "$eq", "!=": "$ne", "<": "$lt", "<=": "$lte",
@@ -54,14 +56,31 @@ def _coerce(col: str, val, field_types: dict[str, type]):
     return val
 
 
-def field_types(db) -> dict[str, type]:
-    """Column → Python type, read once from a sample employee document."""
+def clear_cache() -> None:
+    """Forget the sampled schema after restoring the demo dataset."""
     global _field_types_cache
-    if _field_types_cache is None:
-        sample = db.employees.find_one({}, {f: 0 for f in SYSTEM_FIELDS})
+    _field_types_cache = None
+
+
+def field_types(db, *, session=None) -> dict[str, type]:
+    """Column → Python type, sampled once outside a transaction.
+
+    Transactional callers read their own snapshot and never populate the process
+    cache with uncommitted data (a reset may still roll back).
+    """
+    global _field_types_cache
+    if _field_types_cache is None or session is not None:
+        options = {"session": session} if session is not None else {}
+        sample = db.employees.find_one({}, {f: 0 for f in SYSTEM_FIELDS}, **options)
         if sample is None:
             raise QueryError("employees is empty: run scripts/load_data.py")
-        _field_types_cache = {k: type(v) for k, v in sample.items()}
+        # BSON int64 decodes to an Int64 subclass, but is still an integer
+        # column. Preserve bool as bool rather than treating every int subclass
+        # alike; bool targets must not become numeric averages.
+        types = {k: int if isinstance(v, Int64) else type(v) for k, v in sample.items()}
+        if session is not None:
+            return types
+        _field_types_cache = types
     return _field_types_cache
 
 
@@ -112,11 +131,13 @@ def build_pipeline(q: StructuredQuery, now: datetime,
     ]
 
 
-def run_query(db, q: StructuredQuery, now: datetime) -> list[Cell]:
+def run_query(db, q: StructuredQuery, now: datetime, *, session=None) -> list[Cell]:
     """Run the aggregation; one Cell per non-empty group (empty groups never appear).
     Values are not rounded here; rounding is a display concern."""
     cells = []
-    for row in db.employees.aggregate(build_pipeline(q, now, field_types(db))):
+    options = {"session": session} if session is not None else {}
+    pipeline = build_pipeline(q, now, field_types(db, session=session))
+    for row in db.employees.aggregate(pipeline, **options):
         ids = {int(i) for i in row["ids"]}
         value = row.get("value")
         cells.append(Cell(

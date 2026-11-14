@@ -8,7 +8,7 @@ query_hr(query: StructuredQuery)
   4. targets = memory.releases.release_targets(query, policy)
      history = memory.releases.load_history(db, who, project, targets, now, policy)
                ([] when memory is off)
-     updated_at = employees.updated_at[query.target] for every id in cells
+     updated_at = employees.updated_at[query.target] for EVERY modified employee in the database
                   ({} when memory is off or target is None)
   5. decision = gate.check(query, who.role, cells, history, updated_at, policy)
   6. allowed/partial →
@@ -21,7 +21,7 @@ query_hr(query: StructuredQuery)
 
 Memory off (the left-hand control panel) neither READS nor WRITES releases, so the
 control panel can never pollute the memory-on panel's history. It exists only to show
-the attack succeeding without memory; it still runs L1-L2 and is still audited.
+the attack succeeding without memory; it still runs L1-L3 and is still audited.
 
 request_review(query, reason)
   → review.approvals.create(...); return approval id + "pending"

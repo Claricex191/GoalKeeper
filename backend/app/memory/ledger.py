@@ -19,5 +19,7 @@ def append(db, entry: dict, session=None) -> None:
     inside a caller's transaction."""
     if entry.get("kind") not in KINDS:
         raise ValueError(f"ledger entry needs kind in {KINDS}, got {entry.get('kind')!r}")
-    doc = {"time": clock.now(), **entry}
+    doc = dict(entry)
+    if "time" not in doc:
+        doc["time"] = clock.now()
     db.ledger.insert_one(doc, session=session)

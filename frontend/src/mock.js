@@ -1,7 +1,7 @@
 // Scripted in-browser backend for `npm run dev:mock`: lets the UI be built and
 // rehearsed before the real /chat exists. Numbers are the real IBM HR values for
 // Act 1 (new hire) and Act 2 (raise); everything else returns a generic answer.
-// Shapes follow ../API.md exactly, so switching to the real backend changes nothing.
+// Response shapes follow ../API.md; this is a scripted rehearsal, not the real gate.
 
 const USERS = [
   { user: "mgr_1", role: "manager", team: "sales", display_name: "Manager 1 (Sales)" },
@@ -12,8 +12,11 @@ const USERS = [
 ];
 const DEMO_START = Date.UTC(2026, 10, 9, 9, 0); // Mon 2026-11-09 09:00 UTC
 const DAY = 86400000;
+const PROJECT = "comp-review-2026";
+// Same conservative upper bound as backend/app/clock.py.
+const MAX_OFFSET_DAYS = Math.floor((Date.UTC(9999, 11, 31, 23, 59, 59, 999) - DEMO_START) / DAY) - 1;
 
-const state = { offset: 0, raisedAt: null, releases: [] }; // releases: {team, scenario, day}
+const state = { offset: 0, raisedAt: null, releases: [] };
 
 const eq = (col, val) => ({ col, op: "=", val });
 const SCENARIOS = {
@@ -57,17 +60,40 @@ const dayName = (d) =>
 const money = (v) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function evidenceText(prev, ch) {
-  const parts = [];
-  if (ch.joined) parts.push(`${ch.joined} person joined or left this group`);
-  if (ch.valueChanged) parts.push(`${ch.valueChanged} person's data in this group changed`);
-  return `Since your team's answer on ${dayName(prev.day)} ('${prev.label}'), only ` +
-    `${parts.join(" and ")}; answering now would reveal that person's value.`;
+function resetState() {
+  Object.assign(state, { offset: 0, raisedAt: null, releases: [
+    { user: "mgr_1", team: "sales", project: PROJECT, scenario: "sales_mgr", day: 0,
+      label: SCENARIOS.sales_mgr.label },
+    { user: "mgr_4", team: "hr", project: PROJECT, scenario: "hr_mgr", day: 0,
+      label: SCENARIOS.hr_mgr.label },
+  ] });
 }
 
-async function chat(userId, { message, memory }) {
-  await wait(500);
+// Cold start and Reset prepare the same two Monday disclosures.
+resetState();
+
+function identity(userId) {
   const who = USERS.find((u) => u.user === userId);
+  if (!who) throw new Error("401: unknown user (send X-Demo-User)");
+  return who;
+}
+
+function numeric(value) {
+  if (!["string", "number"].includes(typeof value) || String(value).trim() === "") return NaN;
+  return Number(value);
+}
+
+function evidenceText(prev, viewer) {
+  const source = prev.user === viewer
+    ? `your earlier question on ${dayName(prev.day)} ('${prev.label}')`
+    : "an earlier answer given to your team";
+  return `Since ${source}, fewer than 5 people in this group joined, left or had their ` +
+    "data changed. Answering now would reveal their values.";
+}
+
+async function chat(userId, { message, memory = true, project = PROJECT }) {
+  const who = identity(userId);
+  await wait(500);
   const key = Object.keys(SCENARIOS).find((k) => SCENARIOS[k].match(message));
   if (!key) {
     return {
@@ -81,19 +107,37 @@ async function chat(userId, { message, memory }) {
   const r = s.result(day());
 
   if (memory) {
-    const prev = state.releases
-      .filter((x) => x.team === who.team && x.scenario === key)
+    const history = state.releases.filter((x) =>
+      x.team === who.team && x.project === project && x.scenario === key);
+    // Every scripted HR population contains the updated manager. The real gate
+    // checks ambiguity before pairwise, including prior widened answers.
+    const ambiguous = key === "hr_mgr" && state.raisedAt !== null && (
+      history.some((x) => x.day === state.raisedAt) ||
+      history.filter((x) => x.day < state.raisedAt).length > 1
+    );
+    if (ambiguous) {
+      const explanation = "This answer cannot be safely released alongside earlier answers.";
+      return {
+        reply: explanation,
+        trace: [{ ...base, query: s.query, status: "blocked", rule: "L4",
+          evidence_text: explanation, cells: [],
+          allowed_transforms: ["T1_merge_groups", "T2_drop_filter", "T3_widen_scope"] }],
+      };
+    }
+    const prev = history.filter((x) => !x.widened)
       .map((x) => ({ ...x, ch: s.changes(x.day, day()) }))
       .find((x) => { const c = x.ch.joined + x.ch.valueChanged; return c >= 1 && c <= 4; });
     if (prev) {
       const blocked = { ...base, query: s.query, status: "blocked", rule: "L4.pairwise",
-        evidence_text: evidenceText(prev, prev.ch), cells: [],
+        evidence_text: evidenceText(prev, who.user), cells: [],
         allowed_transforms: ["T3_widen_scope"],
         hints: ["Reviewer precedent: for single-role pay questions, widen to the department"] };
       const w = s.widened.result(day());
       const rewrite = { ...base, query: s.widened.query, status: "allowed", rule: null,
         evidence_text: null, cells: [{ group: {}, n: w.n, value: w.value }],
         allowed_transforms: [] };
+      state.releases.push({ user: who.user, team: who.team, project, scenario: key,
+        day: day(), label: s.widened.label, widened: true });
       return {
         reply: `I can't give the ${s.label.toLowerCase()} right now: ${blocked.evidence_text} ` +
                `Instead, for ${s.widened.label} (${w.n} people) the average monthly income is ` +
@@ -101,7 +145,8 @@ async function chat(userId, { message, memory }) {
         trace: [blocked, rewrite],
       };
     }
-    state.releases.push({ team: who.team, scenario: key, day: day(), label: s.label });
+    state.releases.push({ user: who.user, team: who.team, project, scenario: key,
+      day: day(), label: s.label });
   }
   return {
     reply: `The average monthly income of ${s.label.split(",")[0].toLowerCase()} is ` +
@@ -112,26 +157,50 @@ async function chat(userId, { message, memory }) {
 }
 
 export function api(getUser) {
+  const current = () => identity(getUser());
   return {
     users: async () => USERS,
     chat: (payload) => chat(getUser(), payload),
-    clock: async () => ({ now: nowIso(), offset_days: state.offset }),
-    advanceClock: async (days) => {
-      state.offset += Number(days);
+    clock: async () => {
+      current();
       return { now: nowIso(), offset_days: state.offset };
     },
-    simulateUpdate: async () => {
+    advanceClock: async (days) => {
+      current();
+      const delta = numeric(days);
+      const next = state.offset + delta;
+      const timestamp = DEMO_START + next * DAY;
+      if (!Number.isFinite(delta) || delta < 1 / DAY || next <= state.offset ||
+          !Number.isFinite(timestamp) || !Number.isFinite(new Date(timestamp).getTime()) ||
+          Math.trunc(timestamp) <= Math.trunc(DEMO_START + state.offset * DAY) ||
+          next > MAX_OFFSET_DAYS) {
+        throw new Error("400: days must be finite, positive and within the demo clock range");
+      }
+      state.offset = next;
+      return { now: nowIso(), offset_days: state.offset };
+    },
+    simulateUpdate: async (employee_number, field, new_value) => {
+      current();
+      if (numeric(employee_number) !== 1408 || field !== "MonthlyIncome" ||
+          numeric(new_value) !== 18500) {
+        throw new Error("400: mock supports only employee 1408, MonthlyIncome = 18500");
+      }
+      if (day() <= 0) throw new Error("409: advance the demo clock before updating employee data");
       state.raisedAt = day();
       return { ok: true };
     },
     reset: async () => {
-      Object.assign(state, { offset: 0, raisedAt: null, releases: [] });
-      // warmup: "last week" questions already asked by the Sales and HR teams on Monday
-      state.releases.push({ team: "sales", scenario: "sales_mgr", day: 0, label: SCENARIOS.sales_mgr.label });
-      state.releases.push({ team: "hr", scenario: "hr_mgr", day: 0, label: SCENARIOS.hr_mgr.label });
+      current();
+      resetState();
       return { ok: true, now: nowIso() };
     },
-    pendingReviews: async () => [],
-    decideReview: async () => ({ ok: true }),
+    pendingReviews: async () => {
+      if (current().role !== "hr") throw new Error("403: HR role required");
+      return [];
+    },
+    decideReview: async () => {
+      if (current().role !== "hr") throw new Error("403: HR role required");
+      return { ok: true };
+    },
   };
 }
