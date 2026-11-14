@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     voyage_api_key: str = ""
+    voyage_model: str = "voyage-3.5-lite"
+    voyage_dims: int = 1024    # must match numDimensions of the precedents_vec index
     # Thresholds, memory scope and retention are NOT settings: they come from the
     # active policy (policies collection), which is versioned and human-approved.
 
