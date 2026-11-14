@@ -28,7 +28,7 @@ gate.evidence.public_view, the ledger gets gate.evidence.audit_view.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import ValidationError
 
@@ -37,6 +37,7 @@ from app.gate import evidence
 from app.memory import ledger, precedents, releases
 from app.policy import store
 from app.query import executor
+from app.review import approvals
 from app.schemas import Decision, StructuredQuery
 
 log = logging.getLogger(__name__)
@@ -139,6 +140,8 @@ def _ledger_entry(ctx, query: dict, status: str, now: datetime,
         "memory_on": bool(ctx["memory"]), "query": query, "status": status,
         "policy_version": int(ctx["policy"]["version"]),
     }
+    if ctx.get("turn_id"):
+        entry["turn_id"] = ctx["turn_id"]
     if audit:
         entry.update({"rule": audit["rule"], "evidence_text": audit["evidence_text"],
                       "suppressed": audit["suppressed"]})
@@ -186,6 +189,11 @@ def handle_query_hr(ctx: dict, args: dict) -> dict:
         return _result(ctx, dict(args), "error", message=msg)
     qdict = query.model_dump()
 
+    # L5: repeated probing of one sensitive field → human reviewer, before any data
+    probe = _probing(ctx, query, qdict, now)
+    if probe is not None:
+        return probe
+
     # 2. L1 before touching data
     pre = gate.precheck(query, who.role, policy)
     if pre is not None:
@@ -230,6 +238,81 @@ def _blocked(ctx, query: StructuredQuery, qdict: dict, decision: Decision, now) 
         _remember_block(ctx, query, decision, now)
     return _result(ctx, qdict, "blocked",
                    public=evidence.public_view(decision, viewer=ctx["who"].user), hints=hints)
+
+
+# --- L5: repeated probing ---------------------------------------------------------------
+L5_RULES = ["L5.probing", "L5.pending"]
+L5_DEFAULTS = {"max_attempts": 5, "window_days": 7}
+
+
+def _probing(ctx, query: StructuredQuery, qdict: dict, now) -> dict | None:
+    """L5. After a user's FIRST block on a sensitive field, count that user's further
+    questions (chat messages) on the same field, whatever their outcome. When a new
+    message would be the (max_attempts + 1)-th, i.e. the 6th, it goes to a human reviewer
+    instead of the data, and the field stays locked for that user until the reviewer
+    decides; the decision restarts the count.
+
+    A question = one user message (ctx["turn_id"], set by the loop): the agent's
+    automatic rewrites inside one message count once and are never cut off midway.
+    `transform` is NOT used to tell them apart: the LLM fills it, so it could be gamed.
+    Scope: memory on, same user, project and target, across sessions, within
+    window_days of demo time; errors and L5 entries are not counted. Ordered by ledger
+    _id because the demo clock does not move within a day. Without a turn_id (tests,
+    scripts) every call is its own question.
+    """
+    if not ctx["memory"] or query.target is None:
+        return None
+    db, who = ctx["db"], ctx["who"]
+    cfg = {**L5_DEFAULTS, **ctx["policy"].get("probing", {})}
+    target = query.target
+
+    if approvals.pending_for(db, who.user, ctx["project"], target):
+        return _l5(ctx, qdict, now, "L5.pending",
+                   f"Questions about {target} are paused until a reviewer has looked at "
+                   f"your earlier request.")
+
+    base = {"kind": "gate_decision", "user": who.user, "project": ctx["project"],
+            "memory_on": True, "query.target": target,
+            "rule": {"$nin": L5_RULES}, "status": {"$in": ["allowed", "partial", "blocked"]},
+            "time": {"$gte": now - timedelta(days=int(cfg["window_days"]))}}
+    reset = approvals.reset_point(db, who.user, ctx["project"], target)
+    if reset is not None:
+        base["_id"] = {"$gt": reset}
+    first_block = db.ledger.find_one({**base, "status": "blocked"}, sort=[("_id", 1)])
+    if first_block is None:
+        return None
+    turn = ctx.get("turn_id")
+    if turn and turn == first_block.get("turn_id"):
+        return None                       # still the message that was first refused
+    later = {d.get("turn_id") or d["_id"] for d in db.ledger.find(
+        {**base, "_id": {"$gt": first_block["_id"]}}, {"turn_id": 1})}
+    later.discard(first_block.get("turn_id"))
+    if turn and turn in later:
+        return None                       # a rewrite inside an already-counted message
+    if len(later) < int(cfg["max_attempts"]):
+        return None
+
+    reason = (f"{len(later) + 1} more questions about {target} after an answer was "
+              f"refused (limit {cfg['max_attempts']})")
+    approval_id = approvals.create(db, who.user, who.team, ctx["project"], target, qdict,
+                                   reason, now)
+    return _l5(ctx, qdict, now, "L5.probing",
+               f"You have asked about {target} several times since an answer was refused. "
+               f"This request has been sent to a reviewer; questions about {target} are "
+               f"paused until they decide.", approval_id=approval_id)
+
+
+def _l5(ctx, qdict: dict, now, rule: str, text: str, approval_id: str | None = None) -> dict:
+    entry = _ledger_entry(ctx, qdict, "blocked", now,
+                          {"rule": rule, "evidence_text": text, "suppressed": []})
+    if approval_id:
+        entry["approval_id"] = approval_id
+    ledger.append(ctx["db"], entry)
+    out = _result(ctx, qdict, "blocked", public={"rule": rule, "evidence_text": text})
+    if approval_id:
+        out["trace"]["approval_id"] = approval_id
+        out["for_llm"]["review"] = "pending"
+    return out
 
 
 DISPATCH = {"query_hr": handle_query_hr}

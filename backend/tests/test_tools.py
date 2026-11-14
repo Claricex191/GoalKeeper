@@ -84,11 +84,13 @@ def project(db):
     yield p
     db.releases.delete_many({"project": p})
     db.ledger.delete_many({"project": p})
+    db.approvals.delete_many({"project": p})
 
 
-def ctx(db, project, who, now, memory=True):
+def ctx(db, project, who, now, memory=True, turn=None):
     return {"db": db, "who": who, "project": project, "session_id": "s-test",
-            "memory": memory, "policy": store.load_active(db, "ibm_hr"), "now": now}
+            "memory": memory, "policy": store.load_active(db, "ibm_hr"), "now": now,
+            "turn_id": turn}
 
 
 def _no_ids(out):
@@ -145,3 +147,39 @@ def test_bad_input_and_bad_values_come_back_as_errors(db, project):
     out = handle_query_hr(ctx(db, project, MGR1, MON), q)
     assert out["trace"]["status"] == "error"
     assert db.ledger.count_documents({"project": project, "status": "error"}) == 2
+
+
+def test_l5_probing_goes_to_reviewer(db, project):
+    from app.review import approvals
+
+    def ask(turn, q=SALES_MGR, who=MGR1, memory=True):
+        return handle_query_hr(ctx(db, project, who, MON, memory, turn=turn), q)["trace"]
+
+    # turn 0: first block (max is refused, L1.extreme); the agent's rewrite in the
+    # same message is not a new question
+    assert ask("t0", {**SALES_MGR, "metric": "max"})["rule"] == "L1.extreme"
+    assert ask("t0", {**SALES_MGR, "transform": "T4_extreme_to_avg"})["status"] == "allowed"
+    # turns 1-5: five more questions on MonthlyIncome, answered normally;
+    # a rewrite inside turn 5 is still answered (never cut off midway)
+    for t in range(1, 6):
+        assert ask(f"t{t}")["rule"] is None
+    assert ask("t5", SALES_DEPT)["status"] == "allowed"
+    # control panel and other users are never counted or locked
+    assert ask("off", memory=False)["status"] == "allowed"
+    assert ask("m2", who=MGR2)["status"] == "allowed"
+    # turn 6 goes to a reviewer, no data
+    sixth = ask("t6")
+    assert sixth["rule"] == "L5.probing" and sixth["cells"] == []
+    aid = sixth["approval_id"]
+    assert [p["id"] for p in approvals.list_pending(db, project)] == [aid]
+    _no_ids(sixth)
+    # locked until decided, for this user and field only
+    assert ask("t7")["rule"] == "L5.pending"
+    assert ask("m3", who=MGR2)["status"] == "allowed"
+    # the reviewer decides → unlocked, count restarts
+    assert approvals.decide(db, aid, False, None, "hr_1", MON)
+    assert not approvals.decide(db, aid, True, None, "hr_1", MON)     # already decided
+    assert ask("t8")["status"] == "allowed"
+    assert approvals.list_pending(db, project) == []
+    rules = [d.get("rule") for d in db.ledger.find({"project": project, "user": "mgr_1"})]
+    assert rules.count("L5.probing") == 1 and rules.count("L5.pending") == 1
