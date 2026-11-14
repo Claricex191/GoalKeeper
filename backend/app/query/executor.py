@@ -7,6 +7,8 @@ from datetime import datetime
 from math import isfinite
 from statistics import median
 
+from bson.int64 import Int64
+
 from app.policy.access import authorized_departments
 from app.schemas import Cell, Identity, IndividualQuery, IndividualRecord, StructuredQuery
 
@@ -72,15 +74,33 @@ def _coerce(col: str, val, types: dict[str, type]):
     return val
 
 
-def field_types(db, now: datetime, scope: tuple[str, ...] | None) -> dict[str, type]:
-    """Read schema types only from the authorized, currently active population."""
+def clear_cache() -> None:
+    """Forget the sampled schema after restoring the demo dataset."""
     global _field_types_cache
-    if _field_types_cache is None:
+    _field_types_cache = None
+
+
+def field_types(db, now: datetime, scope: tuple[str, ...] | None,
+                *, session=None) -> dict[str, type]:
+    """Read schema types only from the authorized, currently active population.
+
+    Transactional callers read their own snapshot without using or populating the
+    process cache, which must never retain data from an aborted reset.
+    """
+    global _field_types_cache
+    if _field_types_cache is None or session is not None:
+        options = {"session": session} if session is not None else {}
         sample = db.employees.find_one(
-            {"$and": _base_clauses(now, scope)}, {f: 0 for f in SYSTEM_FIELDS})
+            {"$and": _base_clauses(now, scope)}, {f: 0 for f in SYSTEM_FIELDS}, **options)
         if sample is None:
             raise QueryError("No active employees in the authorized scope")
-        _field_types_cache = {key: type(value) for key, value in sample.items()}
+        # BSON int64 is a Python int subclass; bool remains a distinct type and
+        # cannot become a numeric target merely because it too subclasses int.
+        types = {key: int if isinstance(value, Int64) else type(value)
+                 for key, value in sample.items()}
+        if session is not None:
+            return types
+        _field_types_cache = types
     return _field_types_cache
 
 
@@ -129,7 +149,7 @@ def build_pipeline(q: StructuredQuery, now: datetime, types: dict[str, type],
 
 def _number(value) -> bool:
     try:
-        return type(value) in (int, float) and isfinite(value)
+        return type(value) in (int, float, Int64) and isfinite(value)
     except (TypeError, ValueError, OverflowError):
         return False
 
@@ -145,14 +165,15 @@ def _departments(values, scope: tuple[str, ...] | None) -> set[str]:
 
 
 def run_query(db, q: StructuredQuery, now: datetime,
-              who: Identity, policy: dict) -> list[Cell]:
+              who: Identity, policy: dict, *, session=None) -> list[Cell]:
     """Return statistical cells with scope evidence, never individual input values."""
     if not isinstance(q, StructuredQuery):
         raise QueryError("A statistical query is required")
     scope = _authorize(q, who, policy)  # Must precede even the schema sample read.
-    pipeline = build_pipeline(q, now, field_types(db, now, scope), who, policy)
+    pipeline = build_pipeline(q, now, field_types(db, now, scope, session=session), who, policy)
     cells = []
-    for row in db.employees.aggregate(pipeline):
+    options = {"session": session} if session is not None else {}
+    for row in db.employees.aggregate(pipeline, **options):
         raw_ids = row.get("ids", [])
         if not raw_ids or any(type(item) is not int for item in raw_ids):
             raise QueryError("Employee data has invalid identifiers")

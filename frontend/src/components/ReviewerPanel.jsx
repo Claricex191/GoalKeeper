@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
-// Demo controls (clock, simulated data change, reset) and, for the HR Head role,
-// pending review requests.
+// Only the HR Head can change demo state or handle review requests.
 export default function ReviewerPanel({ me, onClockChange, onReset, onError }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -34,14 +33,19 @@ export default function ReviewerPanel({ me, onClockChange, onReset, onError }) {
 
   return (
     <section className="reviewer">
+      {!isReviewer && (
+        <p className="muted reviewer-reviews">
+          Switch to HR Head to change the demo clock, update employee data, or reset.
+        </p>
+      )}
       <div className="reviewer-group">
         <h3>Demo clock</h3>
         <div className="row">
-          <button className="btn" disabled={busy}
+          <button className="btn" disabled={busy || !isReviewer}
             onClick={() => run("Clock +1 day", async () => onClockChange(await api.advanceClock(1)))}>
             +1 day
           </button>
-          <button className="btn" disabled={busy}
+          <button className="btn" disabled={busy || !isReviewer}
             onClick={() => run("Clock +3 days (Thursday)", async () => onClockChange(await api.advanceClock(3)))}>
             +3 days
           </button>
@@ -51,16 +55,16 @@ export default function ReviewerPanel({ me, onClockChange, onReset, onError }) {
       <div className="reviewer-group">
         <h3>Simulate a data change</h3>
         <div className="row">
-          <input className="small" value={emp} onChange={(e) => setEmp(e.target.value)}
+          <input className="small" disabled={busy || !isReviewer} value={emp} onChange={(e) => setEmp(e.target.value)}
             aria-label="Employee number" />
-          <select value={field} onChange={(e) => setField(e.target.value)} aria-label="Field">
+          <select disabled={busy || !isReviewer} value={field} onChange={(e) => setField(e.target.value)} aria-label="Field">
             <option>MonthlyIncome</option>
             <option>JobSatisfaction</option>
             <option>PerformanceRating</option>
           </select>
-          <input className="small" value={value} onChange={(e) => setValue(e.target.value)}
+          <input className="small" disabled={busy || !isReviewer} value={value} onChange={(e) => setValue(e.target.value)}
             aria-label="New value" />
-          <button className="btn" disabled={busy}
+          <button className="btn" disabled={busy || !isReviewer}
             onClick={() => run(`Employee ${emp}: ${field} updated`,
               () => api.simulateUpdate(emp, field, value))}>
             Apply
@@ -71,7 +75,7 @@ export default function ReviewerPanel({ me, onClockChange, onReset, onError }) {
       <div className="reviewer-group">
         <h3>Reset</h3>
         <div className="row">
-          <button className="btn btn-danger" disabled={busy}
+          <button className="btn btn-danger" disabled={busy || !isReviewer}
             onClick={() => run("Reset: Monday, warmup replayed", async () => {
               await api.reset();
               onReset();

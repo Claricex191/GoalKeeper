@@ -314,9 +314,12 @@ def _probing(ctx, query: StructuredQuery, qdict: dict, now) -> dict | None:
             "memory_on": True, "query.target": target,
             "rule": {"$nin": L5_RULES}, "status": {"$in": ["allowed", "partial", "blocked"]},
             "time": {"$gte": now - timedelta(days=int(cfg["window_days"]))}}
-    reset = approvals.reset_point(db, who.user, ctx["project"], target)
-    if reset is not None:
-        base["_id"] = {"$gt": reset}
+    review_reset = approvals.reset_point(db, who.user, ctx["project"], target)
+    demo_reset = db.meta.find_one({"_id": "demo_reset"})
+    cutoffs = [point for point in (review_reset,
+               demo_reset.get("ledger_after") if demo_reset else None) if point is not None]
+    if cutoffs:
+        base["_id"] = {"$gt": max(cutoffs)}
     first_block = db.ledger.find_one({**base, "status": "blocked"}, sort=[("_id", 1)])
     if first_block is None:
         return None

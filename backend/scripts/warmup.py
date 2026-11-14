@@ -1,20 +1,21 @@
-"""Replay "last week's" queries through the REAL pipeline before the demo.
+"""Seed both Monday disclosures through the real executor, gate and ledger.
 
-Reads tests/cases/warmup.json, sets the simulated clock to each entry's date,
-and calls the query_hr handler. Never writes to `releases` directly.
+Run after scripts/load_data.py and scripts/seed_policies.py on a clean Monday.
+Repeated calls are rejected; /admin/reset restores the data and seeds again.
 """
 
-import json
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `app` importable
 
-from app import clock  # noqa: E402
-from app.agent import tools  # noqa: E402
 from app.db import get_db  # noqa: E402
+from app.demo.warmup import run_warmup  # noqa: E402
 
 
 if __name__ == "__main__":
-    raise NotImplementedError
+    try:
+        count = run_warmup(get_db())
+    except (ValueError, LookupError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"warmup complete: {count} Monday releases for sales and hr")

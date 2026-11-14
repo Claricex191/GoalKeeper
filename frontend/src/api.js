@@ -1,6 +1,6 @@
 // Fetch wrappers. Every call sends X-Demo-User; role and team are resolved server-side.
 // `npm run dev:mock` swaps in a scripted in-browser backend (mock.js) for UI work
-// before the real /chat exists. See ../API.md for the contract.
+// without a live backend. See ../API.md for the contract.
 import * as mock from "./mock.js";
 
 const MOCK = import.meta.env.VITE_MOCK === "1";

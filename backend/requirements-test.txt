@@ -3,3 +3,5 @@
 mongomock==4.3.0
 # Check generated strict tool schemas as JSON Schema in CI.
 jsonschema>=4.10,<5
+# FastAPI route tests use TestClient directly.
+httpx==0.28.1
