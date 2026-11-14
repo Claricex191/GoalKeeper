@@ -14,11 +14,11 @@ CATEGORY_FIELDS = {
     "other_basic": [
         "Attrition", "BusinessTravel", "Department", "Education", "EducationField",
         "EmployeeCount", "Gender", "JobLevel", "JobRole", "NumCompaniesWorked",
-        "OverTime", "StandardHours", "TotalWorkingYears", "TrainingTimesLastYear",
+        "AgeBand", "OverTime", "StandardHours", "TotalWorkingYears", "TrainingTimesLastYear",
         "YearsAtCompany", "YearsInCurrentRole", "YearsSinceLastPromotion",
         "YearsWithCurrManager",
     ],
-    "sensitive_basic": ["Age", "AgeBand", "DistanceFromHome", "MaritalStatus", "Over18",
+    "sensitive_basic": ["Age", "DistanceFromHome", "MaritalStatus", "Over18",
                         "StockOptionLevel"],
     "salary": ["DailyRate", "HourlyRate", "MonthlyIncome", "MonthlyRate", "PercentSalaryHike"],
     "measurement_report": ["EnvironmentSatisfaction", "JobInvolvement", "JobSatisfaction",
@@ -39,7 +39,8 @@ FIELD_LABELS = {
 }
 LABEL_REASONS = {
     "EmployeeNumber": "unique per employee; lookup selector only in individual mode",
-    "AgeBand": "derived from Age; inherits sensitive basic authorization",
+    "AgeBand": "5-year age band; basic information (exact Age stays sensitive), "
+                "still a quasi-identifier so small groups are suppressed",
     "StockOptionLevel": "sensitive basic information, independent of salary grants",
     "PerformanceRating": "separate performance rating authorization",
     "JobSatisfactionComment": "free-text satisfaction comment; can identify its author, "

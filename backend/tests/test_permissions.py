@@ -167,9 +167,12 @@ def test_aggregate_response_cannot_smuggle_unrequested_group_fields(n):
     aggregate(group_by=["AgeBand"]),
     aggregate(filters=[{"col": "AgeBand", "op": "=", "val": "25-29"}]),
 ])
-def test_age_derived_grouping_and_filtering_inherit_sensitive_permissions(query):
-    assert precheck(query, identity("ceo"), POLICY).status == "blocked"
+def test_age_band_is_basic_information_for_grouping_and_filtering(query):
+    # AgeBand is other_basic (5-year bands); exact Age stays sensitive_basic.
+    assert precheck(query, identity("ceo"), POLICY) is None
     assert precheck(query, identity("hr_head"), POLICY) is None
+    exact_age = aggregate(filters=[{"col": "Age", "op": "=", "val": 27}])
+    assert precheck(exact_age, identity("ceo"), POLICY).status == "blocked"
 
 
 @pytest.mark.parametrize("query", [
@@ -315,15 +318,15 @@ def test_old_flat_policy_is_not_a_compatibility_permission_bypass():
     assert precheck(aggregate(), identity("hr_head"), legacy).status == "blocked"
 
 
-def test_sensitive_category_counts_are_not_treated_as_sums_or_ignored():
+def test_age_band_counts_are_basic_and_not_tracked_as_sensitive():
+    # AgeBand moved to other_basic: counting by band is allowed for non-HR roles
+    # and is not a sensitive release target (k-anonymity still applies via L2).
     from app.memory.releases import release_targets
 
     query = StructuredQuery(metric="count", group_by=["AgeBand"])
-    assert release_targets(query, POLICY) == ["AgeBand"]
+    assert release_targets(query, POLICY) == []
     counted = Cell({"AgeBand": "30-34"}, set(range(6)), 6, None)
-    who = identity("hr_head")
-    assert check(query, who, [counted], [], {}, POLICY).status == "allowed"
-    old = Release(set(range(6)), "AgeBand", "count",
-                  datetime(2026, 11, 9, tzinfo=timezone.utc), {}, "Earlier count")
-    decision = check(query, who, [counted], [old], {}, POLICY)
-    assert decision.status == "blocked" and decision.rule == "L4.nonlinear"
+    for role in ("hr_head", "ceo"):
+        assert check(query, identity(role), [counted], [], {}, POLICY).status == "allowed"
+    tiny = Cell({"AgeBand": "60-64"}, set(range(3)), 3, None)
+    assert check(query, identity("ceo"), [tiny], [], {}, POLICY).status != "allowed"

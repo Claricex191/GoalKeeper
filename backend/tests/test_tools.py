@@ -59,10 +59,10 @@ def test_schema_is_narrowed_by_role():
     text = json.dumps(s)
     for field in ("MonthlyIncome", "PerformanceRating", "YearsAtCompany"):
         assert field in text
-    for forbidden in ("AgeBand", "StockOptionLevel", "MaritalStatus"):
+    for forbidden in ("StockOptionLevel", "MaritalStatus", "DistanceFromHome"):
         assert forbidden not in text
     assert {"count", "avg", "median", "max", "min"} <= set(s["metric"]["enum"])
-    assert "AgeBand" not in s["group_by"]["items"].get("enum", [])
+    assert "AgeBand" in s["group_by"]["items"].get("enum", [])
     ordinary = store.tool_schema(POLICY, "ordinary_hr")["properties"]
     assert "count" not in ordinary["metric"]["enum"]
     assert "MonthlyIncome" not in json.dumps(ordinary)

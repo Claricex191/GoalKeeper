@@ -84,8 +84,9 @@ def test_department_manager_individual_schema_contains_only_performance():
 def test_non_hr_aggregate_schema_never_offers_sensitive_basic_fields(role):
     schema = tool_schema(POLICY, role)
     props = schema["properties"]
-    assert "AgeBand" not in props["group_by"]["items"]["enum"]
-    assert "AgeBand" not in props["filters"]["items"]["properties"]["col"]["enum"]
+    assert "AgeBand" in props["group_by"]["items"]["enum"]        # basic since 2026 data
+    assert "MaritalStatus" not in props["group_by"]["items"]["enum"]
+    assert "MaritalStatus" not in props["filters"]["items"]["properties"]["col"]["enum"]
     assert {"Age", "DistanceFromHome", "StockOptionLevel"}.isdisjoint(targets(role))
     assert {"MonthlyIncome", "PerformanceRating"} <= targets(role)
 

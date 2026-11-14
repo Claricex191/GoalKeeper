@@ -191,7 +191,7 @@ def test_tool_metadata_uses_scoped_policy_catalogs_without_employee_reads():
     assert "Sales" in json.dumps(sales)
     assert "Research & Development" not in json.dumps(sales)
     assert "Research & Development" in json.dumps(rnd)
-    assert "AgeBand" not in json.dumps(sales)
+    assert "MaritalStatus" not in json.dumps(sales)
     assert "StockOptionLevel" not in json.dumps(sales)
     # Same memory team cannot create a cache-based metadata scope bypass.
     reassigned = Identity("another", "department_manager", "sales", "R&D", ("Research & Development",))
