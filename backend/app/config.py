@@ -9,7 +9,7 @@ ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
 
-    mongodb_uri: str
+    mongodb_uri: str = ""      # empty in CI: importing must work, connecting fails (db.py)
     mongodb_db: str = "privacy_agent"
     llm_provider: str = "anthropic"
     llm_api_key: str = ""
