@@ -1,22 +1,72 @@
 [
   {
-    "name": "FORMAT EXAMPLE – replace with real cases",
+    "name": "Act 1 – new hire, same question across sessions (A-type)",
+    "not_hired": [473],
     "steps": [
       {
-        "user": "mgr_1",
-        "date": "2026-11-09",
-        "query": {"filters": [{"col": "Department", "op": "=", "val": "<dept>"}],
+        "user": "mgr_1", "team": "sales", "date": "2026-11-09",
+        "note": "36 people, avg 17111.50",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "Sales"},
+                              {"col": "JobRole", "op": "=", "val": "Manager"}],
+                  "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
+        "expect": "allowed"
+      },
+      {"event": "hire", "employee": 473, "date": "2026-11-12"},
+      {
+        "user": "mgr_1", "team": "sales", "date": "2026-11-12",
+        "note": "37 people, avg 16986.97; without memory 37*16986.97 - 36*17111.50 = 12504 (#473)",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "Sales"},
+                              {"col": "JobRole", "op": "=", "val": "Manager"}],
+                  "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
+        "expect": "blocked", "expect_rule": "L4.pairwise"
+      },
+      {
+        "user": "mgr_1", "team": "sales", "date": "2026-11-12", "memory": false,
+        "note": "control panel: no history, so the attack succeeds",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "Sales"},
+                              {"col": "JobRole", "op": "=", "val": "Manager"}],
                   "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
         "expect": "allowed"
       },
       {
-        "user": "mgr_1",
-        "date": "2026-11-13",
-        "note": "same question after a new hire became active",
-        "query": {"filters": [{"col": "Department", "op": "=", "val": "<dept>"}],
+        "user": "mgr_2", "team": "sales", "date": "2026-11-12",
+        "note": "same team as mgr_1 (memory scope = team): also blocked",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "Sales"},
+                              {"col": "JobRole", "op": "=", "val": "Manager"}],
                   "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
-        "expect": "blocked",
-        "expect_rule": "L4.pairwise"
+        "expect": "blocked", "expect_rule": "L4.pairwise"
+      },
+      {
+        "user": "mgr_3", "team": "rnd", "date": "2026-11-12",
+        "note": "different team: mgr_1's memory does not apply (isolation)",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "Sales"},
+                              {"col": "JobRole", "op": "=", "val": "Manager"}],
+                  "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
+        "expect": "allowed"
+      }
+    ]
+  },
+  {
+    "name": "Act 2 – a raise, population unchanged (B-type)",
+    "not_hired": [],
+    "steps": [
+      {
+        "user": "mgr_1", "team": "hr", "date": "2026-11-09",
+        "note": "11 people, avg 18088.64",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "Human Resources"},
+                              {"col": "JobRole", "op": "=", "val": "Manager"}],
+                  "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
+        "expect": "allowed"
+      },
+      {"event": "update", "employee": 1408, "field": "MonthlyIncome",
+       "new_value": 18500, "date": "2026-11-11"},
+      {
+        "user": "mgr_1", "team": "hr", "date": "2026-11-12",
+        "note": "same 11 people, avg 18243.27; without memory 11*(18243.27-18088.64) = 1701 raise",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "Human Resources"},
+                              {"col": "JobRole", "op": "=", "val": "Manager"}],
+                  "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
+        "expect": "blocked", "expect_rule": "L4.pairwise"
       }
     ]
   }

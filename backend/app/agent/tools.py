@@ -7,10 +7,15 @@ query_hr(query: StructuredQuery)
      updated_at = employees.updated_at[query.target] for every id in cells
                   ({} when memory is off or target is None)
   4. decision = gate.check(query, role, cells, history, updated_at, policy)
-  5. ledger.append(...) always
-  6. allowed/partial → memory.releases.record_then_release(...) then return cells
+  5. ledger.append(...) always (kind "gate_decision", memory_on = ctx memory flag)
+  6. allowed/partial → memory on:  memory.releases.record_then_release(...) then return cells
+                       memory off: return cells WITHOUT recording a release
      blocked         → return evidence text, allowed_transforms,
                        and hints from memory.precedents.search(...)
+
+Memory off (the left-hand control panel) neither READS nor WRITES releases, so the
+control panel can never pollute the memory-on panel's history. It exists only to show
+the attack succeeding without memory; it still runs L1-L2 and is still audited.
 
 request_review(query, reason)
   → review.approvals.create(...); return approval id + "pending"
