@@ -82,6 +82,22 @@ npm install && npm run dev
 Atlas Vector Search index on `precedents.embedding` is created in the Atlas UI
 (definition in `app/db.py`).
 
+### Your own `.env` (keys and connection string)
+
+Each member keeps their own `backend/.env`. It is listed in `.gitignore`, so it is never
+committed or pushed; only `backend/.env.example` (placeholders, no secrets) is in the repo.
+
+1. `cd backend && cp .env.example .env`
+2. In Atlas: **Database Access** → create a database user for yourself;
+   **Network Access** → add your current IP address.
+3. **Connect → Drivers → Python**: copy the `mongodb+srv://...` string, put in your
+   username and password, and paste it as `MONGODB_URI=` in `.env`.
+4. Fill in `LLM_API_KEY`, `LLM_MODEL` and `VOYAGE_API_KEY` as needed.
+5. Run scripts and `uvicorn` from inside `backend/`, so `.env` is found.
+
+Before committing, `git status` should never list `.env`. If a key is ever pushed by
+mistake, rotate it (create a new one); deleting the commit is not enough.
+
 ## Data
 
 IBM HR Analytics Employee Attrition & Performance: a **fictional** dataset of 1,470 employees
