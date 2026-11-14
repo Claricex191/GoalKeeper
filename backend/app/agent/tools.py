@@ -281,13 +281,13 @@ def _blocked(ctx, query: StructuredQuery | IndividualQuery, qdict: dict, decisio
 
 # --- L5: repeated probing ---------------------------------------------------------------
 L5_RULES = ["L5.probing", "L5.pending"]
-L5_DEFAULTS = {"max_attempts": 5, "window_days": 7}
+L5_DEFAULTS = {"max_attempts": 3, "window_days": 7}   # policy["probing"] overrides
 
 
 def _probing(ctx, query: StructuredQuery, qdict: dict, now) -> dict | None:
     """L5. After a user's FIRST block on a sensitive field, count that user's further
     questions (chat messages) on the same field, whatever their outcome. When a new
-    message would be the (max_attempts + 1)-th, i.e. the 6th, it goes to a human reviewer
+    message would be the (max_attempts + 1)-th (default 3 → the 4th), it goes to a reviewer
     instead of the data, and the field stays locked for that user until the reviewer
     decides; the decision restarts the count.
 

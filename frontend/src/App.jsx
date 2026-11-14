@@ -67,7 +67,7 @@ export default function App() {
 
       {error && (
         <div className="banner banner-error" role="alert">
-          Backend not reachable: {error}{" "}
+          Request failed: {error}{" "}
           <button className="link" onClick={() => setError(null)}>dismiss</button>
         </div>
       )}

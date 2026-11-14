@@ -45,7 +45,9 @@ def context(monkeypatch):
     monkeypatch.setattr(executor, "_field_types_cache", None)
     ctx = {"db": db, "who": DEMO_USERS["mgr_1"], "project": "merge-test",
            "session_id": "s", "memory": True, "now": DEMO_START,
-           "policy": {**POLICY, "version": 2}}
+           # L5 mechanics are tested at limit 5, independent of the demo setting
+           "policy": {**POLICY, "version": 2,
+                      "probing": {"max_attempts": 5, "window_days": 7}}}
     yield ctx
     client.close()
 
@@ -208,3 +210,7 @@ def test_legacy_role_metadata_has_no_employee_or_assigned_department_hints():
 def test_no_tools_are_exposed_to_an_employee_or_an_unknown_role():
     assert tools.tool_specs(POLICY, DEMO_USERS["emp_1"], db=NoEmployeeReads()) == []
     assert tools.tool_specs(POLICY, "unknown", db=NoEmployeeReads()) == []
+
+
+def test_policy_l5_limit_is_three():
+    assert POLICY["probing"] == {"max_attempts": 3, "window_days": 7}
