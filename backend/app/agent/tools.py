@@ -107,33 +107,30 @@ def _updated_at(db, target: str) -> dict:
 
 
 def _hints(ctx, query: StructuredQuery, decision: Decision) -> list[str]:
-    """Reviewer precedents (semantic memory) + plain-language allowed rewrites.
-    Precedents only suggest; the gate re-checks every rewrite."""
+    """Similar earlier refusals from the semantic memory (precedents, Vector Search),
+    with the rewrite that worked for them. Advisory: the gate re-checks every rewrite.
+    Memory-off panel: no semantic memory either."""
+    if not ctx["memory"]:
+        return []
     hints = []
-    find = getattr(precedents, "find_similar", None)
-    if find is not None:
-        try:
-            for p in find(ctx["db"], query, ctx["project"], k=3):
-                t = p.get("transform")
-                hints.append(f"Reviewer precedent: {p.get('label', '')}"
-                             + (f" → {TRANSFORM_HELP.get(t, t)}" if t else ""))
-        except NotImplementedError:
-            pass
-        except Exception as exc:                       # semantic memory is advisory
-            log.warning("precedent search failed: %s", exc)
+    try:
+        for p in precedents.find_similar(ctx["db"], query, ctx["project"], k=3):
+            t = p.get("transform")
+            hints.append(f"Similar question refused before: {p['label']}"
+                         + (f" → what worked: {TRANSFORM_HELP.get(t, t)}" if t else ""))
+    except Exception as exc:                       # semantic memory is advisory
+        log.warning("precedent search failed: %s", exc)
     return hints
 
 
-def _remember_block(ctx, query: StructuredQuery, decision: Decision, now) -> None:
-    rec = getattr(precedents, "record", None)
-    if rec is None:
+def _precedent(fn, ctx, *args) -> None:
+    """record / resolve a precedent; never let semantic memory break an answer."""
+    if not ctx["memory"]:
         return
     try:
-        rec(ctx["db"], decision, query, ctx["who"], ctx["project"], now)
-    except NotImplementedError:
-        pass
+        fn(ctx["db"], *args)
     except Exception as exc:
-        log.warning("precedent record failed: %s", exc)
+        log.warning("precedent %s failed: %s", fn.__name__, exc)
 
 
 def _ledger_entry(ctx, query: dict, status: str, now: datetime,
@@ -260,6 +257,8 @@ def handle_query_hr(ctx: dict, args: dict) -> dict:
             # Individual reads are audited without creating one-person aggregate
             # releases. All statistics still require the same minimum cohort size.
             ledger.append(db, entry)
+        if isinstance(query, StructuredQuery) and query.transform:
+            _precedent(precedents.resolve, trusted, query, who, trusted["project"], now)
         return _result(trusted, qdict, decision.status,
                        public=evidence.public_view(decision, viewer=who.user))
     except Exception as exc:
@@ -275,7 +274,7 @@ def _blocked(ctx, query: StructuredQuery | IndividualQuery, qdict: dict, decisio
     retryable = isinstance(query, StructuredQuery) and bool(decision.allowed_transforms)
     hints = _hints(ctx, query, decision) if retryable else []
     if retryable and decision.rule != "gate.error":
-        _remember_block(ctx, query, decision, now)
+        _precedent(precedents.record, ctx, decision, query, ctx["who"], ctx["project"], now)
     return _result(ctx, qdict, "blocked",
                    public=evidence.public_view(decision, viewer=ctx["who"].user), hints=hints)
 

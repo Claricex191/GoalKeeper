@@ -47,16 +47,25 @@ def me(who: Identity = Depends(current_identity)) -> dict:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, who: Identity = Depends(current_identity)) -> ChatResponse:
-    # TODO: call agent.loop.run_agent(req, who)
-    raise NotImplementedError
+    return run_agent(req, who)
+
+
+@app.get("/review/pending")
+def review_pending(who: Identity = Depends(current_identity)) -> list[dict]:
+    """L5 review requests waiting for the HR head (frontend ReviewerPanel)."""
+    require_role(who, "hr_head")
+    return approvals.list_pending(get_db())
 
 
 @app.post("/review/{approval_id}")
 def review(approval_id: str, approve: bool, transform: str | None = None,
            who: Identity = Depends(current_identity)):
+    """Approve or reject a pending review; either way the field is unlocked for that
+    user and the L5 count restarts. A review never grants access the policy denies."""
     require_role(who, "hr_head")
-    # TODO: review.approvals.decide(..., reviewer=who.user); on approve also precedents.save(...)
-    raise NotImplementedError
+    if not approvals.decide(get_db(), approval_id, approve, transform, who.user, clock.now()):
+        raise HTTPException(404, "no pending review with this id")
+    return {"ok": True}
 
 
 @app.post("/admin/policy/draft")
