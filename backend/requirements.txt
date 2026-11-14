@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pymongo
+pydantic>=2
+pydantic-settings
+numpy
+scipy
+scikit-learn   # only for fetch_openml in scripts/load_data.py
+pandas
+voyageai
+anthropic      # or: openai  (pick one, see app/agent/loop.py)
+python-dotenv
+pytest

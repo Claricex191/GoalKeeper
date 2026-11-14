@@ -1,0 +1,28 @@
+"""Tool definitions and handlers.
+
+query_hr(query: StructuredQuery)
+  1. validate (pydantic) → on error return a short message so the LLM can retry
+  2. cells = query.executor.run_query(db, query, clock.now())
+  3. history = memory.releases.load_history(...)   ([] when memory is off)
+     updated_at = employees.updated_at[query.target] for every id in cells
+                  ({} when memory is off or target is None)
+  4. decision = gate.check(query, role, cells, history, updated_at, policy)
+  5. ledger.append(...) always
+  6. allowed/partial → memory.releases.record_then_release(...) then return cells
+     blocked         → return evidence text, allowed_transforms,
+                       and hints from memory.precedents.search(...)
+
+request_review(query, reason)
+  → review.approvals.create(...); return approval id + "pending"
+"""
+from app.schemas import StructuredQuery
+
+TOOL_SPECS: list[dict] = []   # TODO: build from StructuredQuery.model_json_schema()
+
+
+def handle_query_hr(ctx: dict, args: dict) -> dict:
+    raise NotImplementedError
+
+
+def handle_request_review(ctx: dict, args: dict) -> dict:
+    raise NotImplementedError

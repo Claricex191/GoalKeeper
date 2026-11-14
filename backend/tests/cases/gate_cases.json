@@ -1,0 +1,23 @@
+[
+  {
+    "name": "FORMAT EXAMPLE – replace with real cases",
+    "steps": [
+      {
+        "user": "mgr_1",
+        "date": "2026-11-09",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "<dept>"}],
+                  "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
+        "expect": "allowed"
+      },
+      {
+        "user": "mgr_1",
+        "date": "2026-11-13",
+        "note": "same question after a new hire became active",
+        "query": {"filters": [{"col": "Department", "op": "=", "val": "<dept>"}],
+                  "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
+        "expect": "blocked",
+        "expect_rule": "L4.pairwise"
+      }
+    ]
+  }
+]

@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+data/*.csv
+.DS_Store
+
+# Pre-hackathon exploration: keep out of the competition repo
+/explore_vulnerabilities.py
+/ibm_hr.csv
