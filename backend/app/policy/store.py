@@ -115,7 +115,114 @@ def detect_schema_drift(db, dataset: str) -> dict:
     raise NotImplementedError
 
 
-def tool_schema(policy: dict) -> dict:
-    """Build the query_hr JSON schema (column enums, allowed metrics) from a policy,
-    so the LLM only ever sees fields the active policy allows."""
-    raise NotImplementedError
+def _nullable_enum(values: list[str]) -> dict:
+    """One of `values`, or null. (The API rejects `type: [string, null]` with an enum.)"""
+    if not values:
+        return {"type": "null"}
+    return {"anyOf": [{"type": "string", "enum": list(values)}, {"type": "null"}]}
+
+
+def tool_schema(policy: dict, role: str, mode: str = "aggre_stats") -> dict:
+    """Narrow each tool to v2 category grants without granting data access itself.
+
+    Individual and aggregate tools have separate object schemas. Identity and data
+    scope are server-owned and cannot appear in either schema. Gate remains the
+    authority for field/metric combinations, scope, query validity and release rules.
+
+    Strict-tool compatible: every object closes additional properties and requires
+    all its properties; optional values are nullable. Runtime Pydantic validation
+    enforces array lengths and other constraints omitted from the strict schema.
+    """
+    if mode not in ("aggre_stats", "individual"):
+        raise ValueError(f"unknown query mode {mode!r}")
+    if policy.get("schema_version") != 2:
+        raise PermissionError("tool schemas require a version 2 policy")
+    permissions = policy.get("roles", {}).get(role)
+    if not permissions or permissions.get("scope") not in (
+            "company", "assigned_department", "own_hr_department"):
+        raise PermissionError("this role has no data scope")
+    grants = permissions.get("grants", {})
+    if not any(mode in modes for modes in grants.values()):
+        raise PermissionError(f"this role has no {mode} grant")
+    labels = policy["field_labels"]
+    never = set(policy.get("never_return", []))
+    allowed = {
+        field for field, category in policy["field_categories"].items()
+        if mode in grants.get(category, []) and field in labels
+        and labels[field] != "identifier" and field not in never
+    }
+    if mode == "individual":
+        if not allowed:
+            raise PermissionError("this role has no returnable individual fields")
+        properties = {
+            "mode": {"type": "string", "enum": ["individual"]},
+            "employee_numbers": {
+                "type": "array", "items": {"type": "integer"},
+                "description": "1 to 100 distinct employee numbers to look up. "
+                               "The server restricts them to your authorized scope.",
+            },
+            "fields": {"type": "array", "items": {"type": "string", "enum": sorted(allowed)},
+                       "description": "The authorized fields to return for each requested employee."},
+        }
+        return {"type": "object", "additionalProperties": False,
+                "required": list(properties), "properties": properties}
+
+    field_metrics = policy["field_metrics"]
+    numeric_metrics = {"sum", "avg", "median"}
+    targets = sorted(field for field in allowed
+                     if numeric_metrics.intersection(field_metrics.get(field, [])))
+    offered = {metric for field in targets for metric in field_metrics[field]
+               if metric in numeric_metrics}
+    if "aggre_stats" in grants.get("other_basic", []):
+        offered.add("count")
+    metrics = [metric for metric in ("count", "sum", "avg", "median") if metric in offered]
+    if not metrics:
+        raise PermissionError("this role has no applicable statistical operations")
+    if targets:
+        # Keep explicit refusals and the T4 rewrite from the main tool contract.
+        metrics += ["max", "min"]
+    quasi = [field for field in policy["quasi_identifiers"] if field in allowed]
+    scalar = {"type": ["string", "number"]}
+    filters = {
+        "type": "array",
+        "description": "Conditions on who is included; all must hold (AND). "
+                       "The server's department scope cannot be removed.",
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["col", "op", "val"],
+            "properties": {
+                "col": {"type": "string", "enum": quasi},
+                "op": {"type": "string", "enum": ["=", "!=", "<", "<=", ">", ">=", "in"]},
+                "val": {"anyOf": [scalar, {"type": "array", "items": scalar}],
+                        "description": "A list only with op 'in'."},
+            },
+        },
+    }
+    grouping = {"type": "array", "items": {"type": "string", "enum": quasi},
+                "description": "At most 2 columns; [] for a single overall number."}
+    if not quasi:
+        # Empty enums are invalid JSON Schema. Null items keep the strict schema
+        # valid without advertising unauthorized columns. Only [] is accepted by
+        # the actual StructuredQuery; nonempty null arrays fail runtime validation.
+        filters = {"type": "array", "items": {"type": "null"},
+                   "description": "No filter fields are authorized; use []."}
+        grouping = {"type": "array", "items": {"type": "null"},
+                    "description": "No grouping fields are authorized; use []."}
+    target = (_nullable_enum(targets) if "count" in offered else
+              {"type": "string", "enum": targets})
+    properties = {
+        "mode": {"type": "string", "enum": ["aggre_stats"]},
+        "filters": filters,
+        "group_by": grouping,
+        "metric": {"type": "string", "enum": metrics},
+        "target": {**target, "description": "The field to aggregate; null only for count."},
+        "transform": {
+            **_nullable_enum(["T1_merge_groups", "T2_drop_filter", "T3_widen_scope",
+                              "T4_extreme_to_avg"]),
+            "description": "null on a first attempt. After a block, the transform you "
+                           "applied (must be one the block allowed).",
+        },
+    }
+    return {"type": "object", "additionalProperties": False,
+            "required": list(properties), "properties": properties}
