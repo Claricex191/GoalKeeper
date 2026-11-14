@@ -84,7 +84,7 @@ def load_history(db, who: Identity, project: str, targets: list[str], now: datet
     return [
         Release(ids=set(d["ids"]), target=d["target"], metric=d["metric"],
                 created_at=d["created_at"], cell_key=d.get("cell_key", {}),
-                label=d.get("label", ""))
+                label=d.get("label", ""), user=d.get("user"))
         for d in db.releases.find(filt).sort("created_at", 1)
     ]
 

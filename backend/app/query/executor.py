@@ -92,6 +92,8 @@ def build_pipeline(q: StructuredQuery, now: datetime,
     group_id = {col: f"${col}" for col in q.group_by} if q.group_by else None
 
     group: dict = {"_id": group_id, "n": {"$sum": 1}, "ids": {"$push": "$EmployeeNumber"}}
+    if q.metric not in ("count", "sum", "avg"):
+        raise QueryError(f"metric '{q.metric}' is not executed")
     if q.metric in ("sum", "avg"):
         if q.target is None:
             raise QueryError(f"metric '{q.metric}' needs a target column")
@@ -100,6 +102,8 @@ def build_pipeline(q: StructuredQuery, now: datetime,
             raise QueryError(f"{q.target} is not numeric; use metric 'count' with a filter "
                              f"on it instead (e.g. {q.target} = <value>)")
         group["value"] = {f"${q.metric}": f"${q.target}"}
+        group["vmin"] = {"$min": f"${q.target}"}
+        group["vmax"] = {"$max": f"${q.target}"}
 
     return [
         {"$match": {"$and": clauses}},
@@ -120,5 +124,7 @@ def run_query(db, q: StructuredQuery, now: datetime) -> list[Cell]:
             ids=ids,
             n=len(ids),
             value=float(value) if value is not None else None,
+            vmin=float(row["vmin"]) if row.get("vmin") is not None else None,
+            vmax=float(row["vmax"]) if row.get("vmax") is not None else None,
         ))
     return cells
