@@ -21,7 +21,9 @@ query_hr(query: StructuredQuery)
        memory on:  releases.record_then_release(...): releases + ledger in ONE
                    transaction; only then are the cells returned (fail closed)
        memory off: ledger only (memory_on False); nothing remembered
-     blocked → ledger; evidence text, allowed_transforms, precedent hints
+     blocked → ledger; evidence text, allowed_transforms, precedent hints;
+               the refusal is remembered as a precedent (memory on)
+     answered rewrite (transform set) → precedent notes which transform worked
 
 Neither view ever contains employee ids or vmin / vmax: the LLM gets
 gate.evidence.public_view, the ledger gets gate.evidence.audit_view.
@@ -101,33 +103,30 @@ def _updated_at(db, target: str) -> dict:
 
 
 def _hints(ctx, query: StructuredQuery, decision: Decision) -> list[str]:
-    """Reviewer precedents (semantic memory) + plain-language allowed rewrites.
-    Precedents only suggest; the gate re-checks every rewrite."""
+    """Similar earlier refusals from the semantic memory (precedents, Vector Search),
+    with the rewrite that worked for them. Advisory: the gate re-checks every rewrite.
+    Memory-off panel: no semantic memory either."""
+    if not ctx["memory"]:
+        return []
     hints = []
-    find = getattr(precedents, "find_similar", None)
-    if find is not None:
-        try:
-            for p in find(ctx["db"], query, ctx["project"], k=3):
-                t = p.get("transform")
-                hints.append(f"Reviewer precedent: {p.get('label', '')}"
-                             + (f" → {TRANSFORM_HELP.get(t, t)}" if t else ""))
-        except NotImplementedError:
-            pass
-        except Exception as exc:                       # semantic memory is advisory
-            log.warning("precedent search failed: %s", exc)
+    try:
+        for p in precedents.find_similar(ctx["db"], query, ctx["project"], k=3):
+            t = p.get("transform")
+            hints.append(f"Similar question refused before: {p['label']}"
+                         + (f" → what worked: {TRANSFORM_HELP.get(t, t)}" if t else ""))
+    except Exception as exc:                       # semantic memory is advisory
+        log.warning("precedent search failed: %s", exc)
     return hints
 
 
-def _remember_block(ctx, query: StructuredQuery, decision: Decision, now) -> None:
-    rec = getattr(precedents, "record", None)
-    if rec is None:
+def _precedent(fn, ctx, *args) -> None:
+    """record / resolve a precedent; never let semantic memory break an answer."""
+    if not ctx["memory"]:
         return
     try:
-        rec(ctx["db"], decision, query, ctx["who"], ctx["project"], now)
-    except NotImplementedError:
-        pass
+        fn(ctx["db"], *args)
     except Exception as exc:
-        log.warning("precedent record failed: %s", exc)
+        log.warning("precedent %s failed: %s", fn.__name__, exc)
 
 
 def _ledger_entry(ctx, query: dict, status: str, now: datetime,
@@ -226,6 +225,8 @@ def handle_query_hr(ctx: dict, args: dict) -> dict:
                                      ctx["session_id"], now, policy, entry)
     else:
         ledger.append(db, entry)
+    if query.transform:
+        _precedent(precedents.resolve, ctx, query, who, ctx["project"], now)
     return _result(ctx, qdict, decision.status,
                    public=evidence.public_view(decision, viewer=who.user))
 
@@ -235,7 +236,7 @@ def _blocked(ctx, query: StructuredQuery, qdict: dict, decision: Decision, now) 
                                            evidence.audit_view(decision)))
     hints = _hints(ctx, query, decision)
     if decision.rule != "gate.error":
-        _remember_block(ctx, query, decision, now)
+        _precedent(precedents.record, ctx, decision, query, ctx["who"], ctx["project"], now)
     return _result(ctx, qdict, "blocked",
                    public=evidence.public_view(decision, viewer=ctx["who"].user), hints=hints)
 

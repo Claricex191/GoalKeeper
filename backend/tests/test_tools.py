@@ -85,6 +85,7 @@ def project(db):
     db.releases.delete_many({"project": p})
     db.ledger.delete_many({"project": p})
     db.approvals.delete_many({"project": p})
+    db.precedents.delete_many({"project": p})
 
 
 def ctx(db, project, who, now, memory=True, turn=None):
