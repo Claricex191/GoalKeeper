@@ -23,6 +23,7 @@ from pymongo.errors import OperationFailure
 from pymongo.operations import SearchIndexModel
 
 from app.config import settings
+from app.policy.defaults import CATEGORIES, ROLES
 
 
 _client: MongoClient | None = None
@@ -48,7 +49,7 @@ RELEASES_VALIDATOR = {
             "project": {"bsonType": "string"},
             "session_id": {"bsonType": "string"},
             "target": {"bsonType": "string"},
-            "metric": {"enum": ["count", "sum", "avg"]},
+            "metric": {"enum": ["count", "sum", "avg", "median"]},
             "cell_key": {"bsonType": "object"},
             "label": {"bsonType": "string"},
             "ids": {"bsonType": "array", "items": {"bsonType": "int"}, "minItems": 5},
@@ -94,28 +95,85 @@ LEDGER_VALIDATOR = {
     }
 }
 
+_GRANTS_SCHEMA = {
+    "bsonType": "object",
+    "required": list(CATEGORIES),
+    "properties": {category: {"bsonType": "array", "uniqueItems": True,
+                               "items": {"enum": ["individual", "aggre_stats"]}}
+                   for category in CATEGORIES},
+    "additionalProperties": False,
+}
+_ROLE_SCHEMA = {
+    "bsonType": "object",
+    "required": ["scope", "grants"],
+    "properties": {
+        "scope": {"enum": ["company", "assigned_department", "own_hr_department", "none"]},
+        "grants": _GRANTS_SCHEMA,
+    },
+    "additionalProperties": False,
+}
+
+POLICY_V2_SCHEMA = {
+    "bsonType": "object",
+    "required": ["dataset", "version", "status", "drafted_by", "k_threshold",
+                 "sensitive_targets", "roles", "schema_version", "field_categories",
+                 "field_metrics", "field_labels", "quasi_identifiers", "never_return",
+                 "tracked_targets"],
+    "properties": {
+        "dataset": {"bsonType": "string"},
+        "version": {"bsonType": "int"},
+        "status": {"enum": ["draft", "active", "retired"]},
+        "drafted_by": {"bsonType": "string"},
+        "approved_by": {"bsonType": "string"},
+        "schema_version": {"enum": [2]},
+        "k_threshold": {"bsonType": "int", "minimum": 5},
+        "median_threshold": {"bsonType": "int", "minimum": 5},
+        "sensitive_targets": {"bsonType": "array", "items": {"bsonType": "string"}},
+        "tracked_targets": {"bsonType": "array", "uniqueItems": True,
+                            "items": {"bsonType": "string"}},
+        "field_categories": {"bsonType": "object",
+                             "additionalProperties": {"enum": list(CATEGORIES)}},
+        "field_metrics": {"bsonType": "object", "additionalProperties": {
+            "bsonType": "array", "uniqueItems": True,
+            "items": {"enum": ["count", "sum", "avg", "median"]}}},
+        "field_labels": {"bsonType": "object", "additionalProperties": {
+            "enum": ["identifier", "quasi_identifier", "sensitive", "other"]}},
+        "quasi_identifiers": {"bsonType": "array", "items": {"bsonType": "string"}},
+        "never_return": {"bsonType": "array", "items": {"bsonType": "string"}},
+        "roles": {"bsonType": "object", "required": list(ROLES),
+                  "properties": {role: _ROLE_SCHEMA for role in ROLES},
+                  "additionalProperties": False},
+    },
+    # an active policy must name the human who approved it
+    "anyOf": [
+        {"properties": {"status": {"enum": ["draft", "retired"]}}},
+        {"properties": {"status": {"enum": ["active"]}}, "required": ["approved_by"]},
+    ],
+    "additionalProperties": True,
+}
+
+# Existing v1 documents remain in the collection for audit. Strict validation must
+# allow the activation transaction to retire them, without permitting legacy grants
+# to be written as new drafts or made active again.
+LEGACY_RETIRED_SCHEMA = {
+    "bsonType": "object",
+    "required": ["dataset", "version", "status", "drafted_by", "k_threshold",
+                 "sensitive_targets", "roles"],
+    "properties": {
+        "dataset": {"bsonType": "string"},
+        "version": {"bsonType": "int"},
+        "status": {"enum": ["retired"]},
+        "schema_version": {"enum": [1]},  # Optional on original v1 documents.
+        "drafted_by": {"bsonType": "string"},
+        "k_threshold": {"bsonType": "int", "minimum": 2},
+        "sensitive_targets": {"bsonType": "array", "items": {"bsonType": "string"}},
+        "roles": {"bsonType": "object"},
+    },
+    "additionalProperties": True,
+}
+
 POLICIES_VALIDATOR = {
-    "$jsonSchema": {
-        "bsonType": "object",
-        "required": ["dataset", "version", "status", "drafted_by", "k_threshold",
-                     "sensitive_targets", "roles"],
-        "properties": {
-            "dataset": {"bsonType": "string"},
-            "version": {"bsonType": "int"},
-            "status": {"enum": ["draft", "active", "retired"]},
-            "drafted_by": {"bsonType": "string"},
-            "approved_by": {"bsonType": "string"},
-            "k_threshold": {"bsonType": "int", "minimum": 2},
-            "sensitive_targets": {"bsonType": "array", "items": {"bsonType": "string"}},
-            "roles": {"bsonType": "object"},
-        },
-        # an active policy must name the human who approved it
-        "anyOf": [
-            {"properties": {"status": {"enum": ["draft", "retired"]}}},
-            {"properties": {"status": {"enum": ["active"]}}, "required": ["approved_by"]},
-        ],
-        "additionalProperties": True,
-    }
+    "$jsonSchema": {"anyOf": [POLICY_V2_SCHEMA, LEGACY_RETIRED_SCHEMA]},
 }
 
 

@@ -6,7 +6,8 @@ Inputs
 - updated_at: last-modified time of the target for EVERY employee that has one (sparse),
   not only the ids in the new cells: the linear check also needs it for ids that appear
   only in old releases.
-Only target queries reach L4. Counts reveal no sensitive value and are never recorded.
+Sums and means use linear checks. Medians and counts on sensitive categories use
+conservative overlap checks; they must never be treated as sums of target values.
 
 Before comparing answers, reject connected histories whose value versions cannot be
 determined from last-modified timestamps. Equal update/release timestamps do not order
@@ -195,7 +196,8 @@ def _matrix(rows: list[set]) -> tuple[dict, np.ndarray]:
 def linear(cells: list[Cell], history: list[Release], target: str | None,
            updated_at: UpdatedAt) -> dict | None:
     """Check historical versions, then test for newly solvable values or changes."""
-    return (_history_ambiguity(cells, history, target, updated_at)
+    return (_nonlinear_overlap(cells, history, target, "avg")
+            or _history_ambiguity(cells, history, target, updated_at)
             or _linear(cells, history, target, updated_at))
 
 
@@ -207,7 +209,7 @@ def _linear(cells: list[Cell], history: list[Release], target: str | None,
                  "coefficient"}]}   (the combination that isolates one of them)"""
     if target is None or not cells:
         return None
-    old = [r for r in history if r.target == target]
+    old = [r for r in history if r.target == target and r.metric in ("sum", "avg")]
     old_rows = [versioned_row(r.ids, target, updated_at, r.created_at) for r in old]
     rows = old_rows + [versioned_row(c.ids, target, updated_at, None) for c in cells]
     newly = disclosures(rows) - disclosures(old_rows)
@@ -224,9 +226,40 @@ def _linear(cells: list[Cell], history: list[Release], target: str | None,
             "n_value_changed": len(changes), "terms": terms}
 
 
+def _nonlinear_overlap(cells: list[Cell], history: list[Release], target: str | None,
+                       metric: str) -> dict | None:
+    """Median is not a sum equation. Fail closed for connected mixed histories.
+
+    An overlap can be indirect: an intervening sum can connect a new population
+    with an old median. Until a nonlinear checker exists, even repeated medians
+    in a connected population are blocked. Disjoint histories remain independent.
+    """
+    people = set().union(*(c.ids for c in cells)) if cells else set()
+    remaining = [r for r in history if r.target == target]
+    connected = []
+    while True:
+        linked = [r for r in remaining if r.ids & people]
+        if not linked:
+            break
+        connected.extend(linked)
+        for release in linked:
+            people.update(release.ids)
+        # Entries newly touched by the expanded set must also be visited.
+        remaining = [r for r in history if r.target == target and r not in connected]
+    if connected and (metric not in ("avg", "sum")
+                      or any(r.metric not in ("avg", "sum") for r in connected)):
+        return {"rule": "L4.nonlinear"}
+    return None
+
+
 def check_history(cells: list[Cell], history: list[Release], target: str | None,
-                  updated_at: UpdatedAt, k: int) -> dict | None:
-    """Check version ambiguity before pairwise (A + B) and linear disclosure checks."""
+                  updated_at: UpdatedAt, k: int, metric: str = "avg") -> dict | None:
+    """Use linear checks only for sums/means; other connected metrics fail closed."""
+    nonlinear = _nonlinear_overlap(cells, history, target, metric)
+    if nonlinear is not None:
+        return nonlinear
+    if metric not in ("avg", "sum"):
+        return None
     return (_history_ambiguity(cells, history, target, updated_at)
             or pairwise(cells, history, target, updated_at, k)
             or _linear(cells, history, target, updated_at))

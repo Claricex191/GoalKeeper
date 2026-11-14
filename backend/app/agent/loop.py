@@ -22,7 +22,7 @@ def run_agent(req: ChatRequest, who: Identity) -> ChatResponse:
     """Tool-calling loop.
 
     `who` is resolved server-side (app/users.py); pass it to the tool handlers via ctx.
-    Use who.role for L1 and who.team / who.user for memory scope, never anything the
+    Pass who to L1 and use who.team / who.user for memory scope, never anything the
     LLM or the request body says.
 
     - Build messages from prompts.SYSTEM_PROMPT + this session's short-term context.

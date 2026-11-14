@@ -54,7 +54,7 @@ def chat(req: ChatRequest, who: Identity = Depends(current_identity)) -> ChatRes
 @app.post("/review/{approval_id}")
 def review(approval_id: str, approve: bool, transform: str | None = None,
            who: Identity = Depends(current_identity)):
-    require_role(who, "hr")
+    require_role(who, "hr_head")
     # TODO: review.approvals.decide(..., reviewer=who.user); on approve also precedents.save(...)
     raise NotImplementedError
 
@@ -81,7 +81,7 @@ def admin_clock(days: float):
 def admin_simulate_update(employee_number: int, field: str, new_value: float | int | str):
     """Demo stand-in for a real HR system write (e.g. a raise).
 
-    - `field` must be one of the active policy's sensitive_targets (else 400).
+    - `field` must be one of the active policy's tracked_targets (else 400).
     - In one update on employees: set `<field>` = new_value AND
       `updated_at.<field>` = clock.now() (the simulated clock, so it is comparable
       with releases.created_at).

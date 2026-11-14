@@ -17,6 +17,12 @@ _LIFECYCLE_KEYS = {"_id", "dataset", "version", "status", "drafted_by", "approve
 _active_cache: dict[str, dict] = {}
 
 
+def _require_current_schema(policy: dict) -> None:
+    if policy.get("schema_version") != 2:
+        raise ValueError("policy schema_version must be 2; legacy policies are retained "
+                         "only for audit and must be replaced by a version 2 policy")
+
+
 def ensure_policy_indexes(db) -> None:
     """At most one active version per dataset, enforced by the database itself."""
     db.policies.create_index([("dataset", ASCENDING), ("version", ASCENDING)], unique=True)
@@ -31,7 +37,9 @@ def load_active(db, dataset: str) -> dict:
         doc = db.policies.find_one({"dataset": dataset, "status": "active"})
         if doc is None:
             raise LookupError(f"no active policy for {dataset!r}; run scripts/seed_policies.py")
+        _require_current_schema(doc)
         _active_cache[dataset] = doc
+    _require_current_schema(_active_cache[dataset])
     return _active_cache[dataset]
 
 
@@ -41,6 +49,7 @@ def clear_cache() -> None:
 
 def create_draft(db, dataset: str, policy: dict, drafted_by: str) -> int:
     """Insert a new version with status "draft"; return its version number."""
+    _require_current_schema(policy)
     last = db.policies.find_one({"dataset": dataset}, sort=[("version", DESCENDING)])
     version = last["version"] + 1 if last else 1
     body = {k: v for k, v in policy.items() if k not in _LIFECYCLE_KEYS}
@@ -60,12 +69,15 @@ def activate(db, dataset: str, version: int, approved_by: str) -> None:
     """Human approval: retire the current active version, activate this one,
     and append {kind: "policy_change", dataset, from_version, to_version, user} to the
     ledger. Never called by the agent.
-    A retired version may be re-activated (rollback). All writes in one transaction."""
+    A retired version 2 policy may be re-activated (rollback). Legacy policies can
+    only be retired as part of the upgrade; never re-activated. All writes are in
+    one transaction."""
     if not approved_by:
         raise ValueError("activation needs a human approver")
     target = db.policies.find_one({"dataset": dataset, "version": version})
     if target is None:
         raise LookupError(f"{dataset!r} has no version {version}")
+    _require_current_schema(target)
     if target["status"] == "active":
         return
     current = db.policies.find_one({"dataset": dataset, "status": "active"})

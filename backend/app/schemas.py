@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # --- Whitelists ------------------------------------------------------------------
 # NOT hard-coded here. Field lists, thresholds and role permissions come from the
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 Op = Literal["=", "!=", "<", "<=", ">", ">=", "in"]
 # max/min exist only so the gate can refuse them on the record (L1.extreme); never executed.
-Metric = Literal["count", "sum", "avg", "max", "min"]   # later: "median", "var"
+Metric = Literal["count", "sum", "avg", "median", "max", "min"]
 Transform = Literal["T1_merge_groups", "T2_drop_filter", "T3_widen_scope",
                     "T4_extreme_to_avg"]                 # T4: max/min → average by group
 Status = Literal["allowed", "partial", "blocked"]
@@ -25,18 +25,44 @@ Status = Literal["allowed", "partial", "blocked"]
 
 # --- What the LLM fills in (also used to generate the tool schema) --------------
 class Filter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     col: str
     op: Op
     val: str | int | float | list[str | int | float]
 
 
 class StructuredQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["aggre_stats"] = "aggre_stats"
     filters: list[Filter] = Field(default_factory=list)
     group_by: list[str] = Field(default_factory=list, max_length=2)
     metric: Metric
     target: str | None = None          # None only when metric == "count"
     transform: Transform | None = None # set when rewriting after a block
     # TODO: validators: columns in whitelists, target required unless count
+
+
+class IndividualQuery(BaseModel):
+    """An explicit employee lookup; identity and scope never come from the agent."""
+
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["individual"]
+    employee_numbers: list[int] = Field(min_length=1, max_length=100)
+    fields: list[str] = Field(min_length=1, max_length=35)
+
+    @field_validator("employee_numbers")
+    @classmethod
+    def unique_employees(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("employee_numbers must be unique")
+        return value
+
+
+@dataclass
+class IndividualRecord:
+    employee_number: int
+    department: str
+    values: dict
 
 
 # --- Gate input / output (pure Python, no DB) -----------------------------------
@@ -49,6 +75,7 @@ class Cell:
     vmin: float | None = None # smallest / largest target value in the cell, for the L2
     vmax: float | None = None # homogeneity check; required when query.target is set.
                               # Server-only: never returned (gate.evidence.public_view).
+    departments: set[str] | None = None  # Server-only proof of the returned population's scope.
 
 
 @dataclass
@@ -64,10 +91,11 @@ class Release:                # one row of the disclosure ledger (security memor
                               # only to that user. None → treated as a teammate's release.
 
 
-# Per-employee, per-sensitive-field last-modified time, from employees.updated_at:
+# Per-employee, per-statistical-target last-modified time, from employees.updated_at:
 #   {EmployeeNumber: {"MonthlyIncome": datetime, ...}}
-# A missing employee or field means "not modified since load". Only sensitive targets
-# are tracked (see docs/collections.md, employees.updated_at).
+# A missing employee or field means "not modified since load". Every field in the
+# policy's tracked_targets is tracked, including numerical Other Basic Information.
+# This keeps historical answers about any numeric target comparable across updates.
 UpdatedAt = dict[int, dict[str, datetime]]
 
 
@@ -79,10 +107,14 @@ class Decision:
     evidence: dict | None = None                          # why blocked (for templates)
     rule: str | None = None                               # e.g. "L4.pairwise"
     allowed_transforms: list[Transform] = field(default_factory=list)
+    records: list[IndividualRecord] = field(default_factory=list)
+    mode: Literal["aggre_stats", "individual"] = "aggre_stats"
+    record_indices: list[int] = field(default_factory=list)
 
 
 # --- Who is asking (resolved server-side, see app/users.py) ---------------------
-Role = Literal["manager", "hr", "employee"]
+Role = Literal["ceo", "vp", "hr_head", "hr_salary_manager", "department_hr_manager",
+               "department_manager", "ordinary_hr", "employee"]
 
 
 @dataclass(frozen=True)
@@ -91,6 +123,7 @@ class Identity:
     role: Role
     team: str                 # memory scope boundary when policy.memory.scope == "team"
     display_name: str
+    departments: tuple[str, ...] = ()  # Assigned data scope; independent of the memory team.
 
 
 # --- API ------------------------------------------------------------------------

@@ -1,0 +1,3 @@
+-r requirements.txt
+# Execute the real query pipelines locally against the complete IBM CSV.
+mongomock==4.3.0
