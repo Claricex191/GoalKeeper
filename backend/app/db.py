@@ -62,6 +62,63 @@ RELEASES_VALIDATOR = {
 }
 
 
+LEDGER_VALIDATOR = {
+    "$jsonSchema": {
+        "bsonType": "object",
+        "required": ["kind", "time", "user"],
+        "properties": {
+            "kind": {"enum": ["gate_decision", "data_update", "policy_change"]},
+            "time": {"bsonType": "date"},
+            "user": {"bsonType": "string"},
+        },
+        # exactly one branch per kind, with that kind's extra required fields
+        "oneOf": [
+            {"properties": {"kind": {"enum": ["gate_decision"]},
+                            "query": {"bsonType": "object"},
+                            "status": {"enum": ["allowed", "partial", "blocked", "error"]},
+                            "policy_version": {"bsonType": "int"},
+                            "memory_on": {"bsonType": "bool"}},
+             "required": ["query", "status", "policy_version"]},
+            {"properties": {"kind": {"enum": ["data_update"]},
+                            "employee_number": {"bsonType": "int"},
+                            "field": {"bsonType": "string"}},
+             "required": ["employee_number", "field"],
+             "not": {"required": ["new_value"]}},       # never log the new value
+            {"properties": {"kind": {"enum": ["policy_change"]},
+                            "dataset": {"bsonType": "string"},
+                            "from_version": {"bsonType": ["int", "null"]},
+                            "to_version": {"bsonType": "int"}},
+             "required": ["dataset", "from_version", "to_version"]},
+        ],
+        "additionalProperties": True,
+    }
+}
+
+POLICIES_VALIDATOR = {
+    "$jsonSchema": {
+        "bsonType": "object",
+        "required": ["dataset", "version", "status", "drafted_by", "k_threshold",
+                     "sensitive_targets", "roles"],
+        "properties": {
+            "dataset": {"bsonType": "string"},
+            "version": {"bsonType": "int"},
+            "status": {"enum": ["draft", "active", "retired"]},
+            "drafted_by": {"bsonType": "string"},
+            "approved_by": {"bsonType": "string"},
+            "k_threshold": {"bsonType": "int", "minimum": 2},
+            "sensitive_targets": {"bsonType": "array", "items": {"bsonType": "string"}},
+            "roles": {"bsonType": "object"},
+        },
+        # an active policy must name the human who approved it
+        "anyOf": [
+            {"properties": {"status": {"enum": ["draft", "retired"]}}},
+            {"properties": {"status": {"enum": ["active"]}}, "required": ["approved_by"]},
+        ],
+        "additionalProperties": True,
+    }
+}
+
+
 def _ensure_validator(db, name: str, validator: dict) -> None:
     """Create the collection with this validator, or update it if it already exists."""
     if name in db.list_collection_names():
@@ -75,8 +132,10 @@ def _ensure_validator(db, name: str, validator: dict) -> None:
 def ensure_indexes(db) -> None:
     """Create TTL index on releases.expires_at, lookup indexes, and $jsonSchema validators.
     Idempotent: safe to call on every startup.
-    Done: releases. TODO: ledger and policies validators (docs/collections.md)."""
+    Validators: releases, ledger, policies (docs/collections.md)."""
     _ensure_validator(db, "releases", RELEASES_VALIDATOR)
+    _ensure_validator(db, "ledger", LEDGER_VALIDATOR)
+    _ensure_validator(db, "policies", POLICIES_VALIDATOR)
     db.releases.create_index([("project", ASCENDING), ("target", ASCENDING), ("user", ASCENDING)])
     db.releases.create_index([("project", ASCENDING), ("target", ASCENDING), ("team", ASCENDING)])
     # Physical cleanup in REAL time; logical expiry is checked against clock.now() in
