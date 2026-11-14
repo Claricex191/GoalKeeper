@@ -16,8 +16,10 @@ from pydantic import BaseModel, Field
 # Use policy.store.load_active() and validate StructuredQuery against it.
 
 Op = Literal["=", "!=", "<", "<=", ">", ">=", "in"]
-Metric = Literal["count", "sum", "avg"]            # later: "median", "var"
-Transform = Literal["T1_merge_groups", "T2_drop_filter", "T3_widen_scope"]
+# max/min exist only so the gate can refuse them on the record (L1.extreme); never executed.
+Metric = Literal["count", "sum", "avg", "max", "min"]   # later: "median", "var"
+Transform = Literal["T1_merge_groups", "T2_drop_filter", "T3_widen_scope",
+                    "T4_extreme_to_avg"]                 # T4: max/min → average by group
 Status = Literal["allowed", "partial", "blocked"]
 
 
@@ -44,6 +46,9 @@ class Cell:
     ids: set[int]             # population S (EmployeeNumber)
     n: int
     value: float | None       # None for pure counts
+    vmin: float | None = None # smallest / largest target value in the cell, for the L2
+    vmax: float | None = None # homogeneity check; required when query.target is set.
+                              # Server-only: never returned (gate.evidence.public_view).
 
 
 @dataclass
@@ -55,6 +60,8 @@ class Release:                # one row of the disclosure ledger (security memor
     cell_key: dict            # group values of the released cell, e.g. {"Gender": "Female"}
     label: str                # fixed-format description for evidence text, e.g.
                               # "Sales / Manager, average MonthlyIncome" (no values)
+    user: str | None = None   # who received it; evidence names this release (label, date)
+                              # only to that user. None → treated as a teammate's release.
 
 
 # Per-employee, per-sensitive-field last-modified time, from employees.updated_at:
