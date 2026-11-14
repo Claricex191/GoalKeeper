@@ -12,7 +12,7 @@ from app.schemas import Identity, StructuredQuery
 
 WHO = Identity("executor_test", "hr_head", "hr", "HR Head")
 
-CSV = Path(__file__).resolve().parents[1] / "data" / "ibm_hr.csv"
+from app.demo.baseline import CSV_PATH as CSV   # data/goalkeeper_hr_2026.csv
 NEW_HIRE_ID = 473
 MON, THU = DEMO_START, NEW_HIRE_START
 
@@ -36,6 +36,7 @@ def df():
         pytest.skip("run scripts/load_data.py --dry-run to create the CSV")
     pd = pytest.importorskip("pandas")
     d = pd.read_csv(CSV)
+    d = d[d["active"] == "on"]                  # people who left are never queried
     low = d["Age"] // 5 * 5                     # same derivation as scripts/load_data.py
     d["AgeBand"] = low.astype(str) + "-" + (low + 4).astype(str)
     return d
@@ -92,8 +93,8 @@ def test_matches_pandas(db, df, qd, now):
 def test_demo_numbers(db):
     q = StructuredQuery(filters=SALES_MGR, metric="avg", target="MonthlyIncome")
     (mon,), (thu,) = run_query(db, q, MON, WHO, POLICY), run_query(db, q, THU, WHO, POLICY)
-    assert (mon.n, round(mon.value, 2)) == (36, 17111.50)
-    assert (thu.n, round(thu.value, 2)) == (37, 16986.97)
+    assert (mon.n, round(mon.value, 2)) == (35, 16986.46)    # 2026 data, active only
+    assert (thu.n, round(thu.value, 2)) == (36, 16861.94)
     assert thu.ids - mon.ids == {NEW_HIRE_ID}
 
 

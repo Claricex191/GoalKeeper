@@ -22,7 +22,8 @@ CATEGORY_FIELDS = {
                         "StockOptionLevel"],
     "salary": ["DailyRate", "HourlyRate", "MonthlyIncome", "MonthlyRate", "PercentSalaryHike"],
     "measurement_report": ["EnvironmentSatisfaction", "JobInvolvement", "JobSatisfaction",
-                           "RelationshipSatisfaction", "WorkLifeBalance"],
+                           "JobSatisfactionComment", "RelationshipSatisfaction",
+                           "WorkLifeBalance"],
     "performance_rating": ["PerformanceRating"],
 }
 FIELD_CATEGORIES = {name: category for category, names in CATEGORY_FIELDS.items()
@@ -41,6 +42,8 @@ LABEL_REASONS = {
     "AgeBand": "derived from Age; inherits sensitive basic authorization",
     "StockOptionLevel": "sensitive basic information, independent of salary grants",
     "PerformanceRating": "separate performance rating authorization",
+    "JobSatisfactionComment": "free-text satisfaction comment; can identify its author, "
+                              "so individual reads only and never aggregated",
 }
 
 # Numeric storage alone is insufficient: categorical strings cannot have a mean,
@@ -55,8 +58,11 @@ _ADDITIVE = {
     "TrainingTimesLastYear", "YearsAtCompany", "YearsInCurrentRole",
     "YearsSinceLastPromotion", "YearsWithCurrManager",
 }
+# Free text: no statistic is meaningful, and k-anonymity rules do not apply to text.
+# Readable only through individual grants (e.g. HR), never through aggre_stats.
+_TEXT = {"JobSatisfactionComment"}
 FIELD_METRICS = {
-    name: (["count"] if name in _CATEGORICAL else
+    name: ([] if name in _TEXT else ["count"] if name in _CATEGORICAL else
            ["count", "avg", "median"] + (["sum"] if name in _ADDITIVE else []))
     for name in FIELD_CATEGORIES
 }

@@ -111,13 +111,13 @@ def test_act1_new_hire(db, project):
     # Monday: mgr_1 learns the Sales-manager average (36 people), remembered for the team
     mon = handle_query_hr(ctx(db, project, MGR1, MON), SALES_MGR)
     assert mon["trace"]["status"] == "allowed"
-    assert mon["for_llm"]["cells"] == [{"group": {}, "n": 36, "value": 17111.5}]
+    assert mon["for_llm"]["cells"] == [{"group": {}, "n": 35, "value": 16986.46}]
     assert db.releases.count_documents({"project": project}) == 1
     _no_ids(mon)
 
     # Thursday, control panel: no memory → the differencing attack succeeds
     off = handle_query_hr(ctx(db, project, MGR2, THU, memory=False), SALES_MGR)
-    assert off["for_llm"]["cells"] == [{"group": {}, "n": 37, "value": 16986.97}]
+    assert off["for_llm"]["cells"] == [{"group": {}, "n": 36, "value": 16861.94}]
     assert db.releases.count_documents({"project": project}) == 1   # nothing written
 
     # Thursday, with memory: a teammate asks again → blocked, rewrite offered
@@ -132,7 +132,7 @@ def test_act1_new_hire(db, project):
     # the rewrite the LLM is expected to make: the whole Sales department
     wide = handle_query_hr(ctx(db, project, MGR2, THU), SALES_DEPT)
     assert wide["trace"]["status"] == "allowed"
-    assert wide["for_llm"]["cells"] == [{"group": {}, "n": 446, "value": 6959.17}]
+    assert wide["for_llm"]["cells"] == [{"group": {}, "n": 355, "value": 7260.26}]
     assert wide["trace"]["query"]["transform"] == "T3_widen_scope"
 
     kinds = [(d["status"], d["memory_on"]) for d in

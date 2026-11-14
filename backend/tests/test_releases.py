@@ -97,7 +97,7 @@ def record_monday(db, project):
 def test_written_and_read_back_on_thursday(db, project):
     cell = record_monday(db, project)
     (r,) = load_history(db, MGR1, project, ["MonthlyIncome"], THU, POLICY)
-    assert r.ids == cell.ids and len(r.ids) == 36
+    assert r.ids == cell.ids and len(r.ids) == 35
     assert r.created_at == MON and r.metric == "avg"
     assert r.label == "Department=Sales, JobRole=Manager | average MonthlyIncome"
     assert db.ledger.count_documents({"project": project}) == 1

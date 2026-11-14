@@ -55,7 +55,7 @@ def summarize(docs: list[dict]) -> None:
     print(f"documents: {len(docs)}  fields per doc: {len(docs[0])}")
     for label, at in [("Mon", DEMO_START), ("Thu", NEW_HIRE_START)]:
         g = [d for d in docs if d["Department"] == "Sales" and d["JobRole"] == "Manager"
-             and d["start_date"] <= at]
+             and d["active"] and d["start_date"] <= at]
         avg = sum(d["MonthlyIncome"] for d in g) / len(g)
         print(f"  Sales / Manager on {label}: n={len(g)}  avg MonthlyIncome={avg:.2f}")
     left = {k for d in docs for k, v in d.items() if type(v).__module__.startswith("numpy")}
