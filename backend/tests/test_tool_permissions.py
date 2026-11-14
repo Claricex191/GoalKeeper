@@ -71,8 +71,10 @@ def test_both_public_views_use_group_keys_and_round_statistical_values(context):
 
 
 @pytest.mark.parametrize("memory", [True, False])
-def test_four_person_mean_never_reaches_agent_even_without_memory(context, memory):
+@pytest.mark.parametrize("user", ["mgr_1", "dept_hr_1", "hr_1"])
+def test_four_person_mean_never_reaches_agent_even_without_memory(context, memory, user):
     ctx, employees, events = context
+    ctx["who"] = DEMO_USERS[user]
     ctx["memory"] = memory
     ctx["policy"]["k_threshold"] = 2
     employees.values = [1000, 2000, 3000, 4000]
@@ -89,6 +91,30 @@ def test_employee_count_rejected_before_any_employee_read(context):
     assert result["trace"]["rule"] == "L1.role" and result["for_llm"]["cells"] == []
     assert employees.calls == []
     assert events[0][0] == "audit"
+
+
+def test_department_hr_manager_is_offered_only_statistics():
+    specs = tools.tool_specs(POLICY, DEMO_USERS["dept_hr_1"])
+    assert [spec["name"] for spec in specs] == ["query_hr"]
+
+
+@pytest.mark.parametrize("tool_name", ["query_hr", "query_hr_individual"])
+@pytest.mark.parametrize("field", [
+    "YearsAtCompany", "Age", "MonthlyIncome", "JobSatisfaction", "PerformanceRating",
+])
+def test_department_hr_individual_calls_are_denied_before_employee_reads(context, tool_name, field):
+    ctx, employees, events = context
+    ctx["who"] = DEMO_USERS["dept_hr_1"]
+    result = tools.DISPATCH[tool_name](ctx, {
+        "mode": "individual", "fields": [field], "employee_numbers": [7],
+    })
+    assert result["trace"]["rule"] == "L1.role"
+    for view in (result["for_llm"], result["trace"]):
+        assert view["status"] == "blocked" and view["cells"] == []
+        assert not view.get("records")
+        assert not view.get("allowed_transforms")
+    assert employees.calls == []
+    assert [kind for kind, _ in events] == ["audit", "public"]
 
 
 @pytest.mark.parametrize("args", [

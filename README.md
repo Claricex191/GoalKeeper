@@ -33,6 +33,15 @@ field mapping is in [the policy specification](docs/collections.md#policies), wi
 source in `backend/app/policy/defaults.py`. Existing v1 policies must be replaced with
 a v2 policy before queries are served; the new code denies legacy flat grants.
 
+The current matrix restricts Department HR Managers to statistics in all five
+categories within their assigned department. Updating `defaults.py` alone does not
+change an existing active database policy, even if it already uses schema version 2.
+To apply the updated grants, stop all backend workers, run
+`python scripts/seed_policies.py --approved-by "<your name>"` from `backend/`, then
+start the workers again. This creates a new policy version and retains the old one
+for audit; restarting also clears cached policies and conversation history containing
+previously authorized individual results. The policy schema remains version 2.
+
 ## Layout and owners
 
 ```

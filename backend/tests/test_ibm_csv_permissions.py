@@ -28,7 +28,7 @@ GRANTS = {
     "vp":                    ("a", "",   "a",  "a",  "a"),
     "hr_head":               ("ia", "ia", "ia", "ia", "ia"),
     "hr_salary_manager":     ("ia", "ia", "ia", "a",  "a"),
-    "department_hr_manager": ("ia", "ia", "a",  "ia", "ia"),
+    "department_hr_manager": ("a",  "a",  "a",  "a",  "a"),
     "department_manager":    ("a", "",   "a",  "a",  "ia"),
     "ordinary_hr":           ("i", "i",  "",   "",   "a"),
     "employee":              ("",  "",   "",   "",   ""),
@@ -171,7 +171,7 @@ def test_full_csv_rewrites_cannot_leave_sales_department(db, rows, transform):
     assert cells[0].n == sum(r["Department"] == "Sales" for r in rows)
 
 
-@pytest.mark.parametrize("role", ["department_hr_manager", "department_manager", "ordinary_hr"])
+@pytest.mark.parametrize("role", ["department_manager", "ordinary_hr"])
 def test_full_csv_individual_lookup_omits_people_outside_scope(db, rows, role):
     who = identity(role)
     own_department = who.departments[0]
@@ -185,6 +185,19 @@ def test_full_csv_individual_lookup_omits_people_outside_scope(db, rows, role):
     decision = gate.check_individual(query, who, records, POLICY)
     assert public_view(decision)["records"] == [
         {"request_index": 1, "values": {field: own[field]}}]
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_full_csv_department_hr_manager_cannot_lookup_individuals_in_own_department(db, rows, field):
+    who = identity("department_hr_manager")
+    employee = population(rows, who.role)[0]
+    query = IndividualQuery(mode="individual", employee_numbers=[employee["EmployeeNumber"]],
+                            fields=[field])
+    decision = gate.precheck(query, who, POLICY)
+    assert decision.status == "blocked" and decision.rule == "L1.role"
+    assert not public_view(decision).get("records")
+    with pytest.raises(QueryError, match="not authorized"):
+        run_individual_query(db, query, NEW_HIRE_START, who, POLICY)
 
 
 def test_full_csv_sensitive_individual_fields_are_correct_and_projected(db, rows):

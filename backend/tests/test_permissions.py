@@ -19,7 +19,7 @@ EXPECTED = {
     "vp":                    ("a", "",  "a",  "a",  "a"),
     "hr_head":               ("ia", "ia", "ia", "ia", "ia"),
     "hr_salary_manager":     ("ia", "ia", "ia", "a",  "a"),
-    "department_hr_manager": ("ia", "ia", "a",  "ia", "ia"),
+    "department_hr_manager": ("a",  "a",  "a",  "a",  "a"),
     "department_manager":    ("a", "",  "a",  "a",  "ia"),
     "ordinary_hr":           ("i", "i", "",   "",   "a"),
     "employee":              ("",  "",  "",   "",   ""),
@@ -276,6 +276,15 @@ def test_individual_performance_authorized_for_own_department_only():
     other = IndividualRecord(7, "Research & Development", {"PerformanceRating": 3})
     assert check_individual(query, who, [own], POLICY).status == "allowed"
     assert check_individual(query, who, [other], POLICY).status == "blocked"
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_department_hr_manager_cannot_release_individual_values_even_within_scope(field):
+    record = IndividualRecord(7, "Sales", {field: 3})
+    decision = check_individual(individual(field), identity("department_hr_manager"),
+                                [record], POLICY)
+    assert decision.status == "blocked" and decision.rule == "L1.role"
+    assert not evidence.public_view(decision).get("records")
 
 
 def test_individual_results_identify_request_positions_despite_missing_or_unordered_rows():
