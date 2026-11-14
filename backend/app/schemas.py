@@ -74,10 +74,22 @@ class Decision:
     allowed_transforms: list[Transform] = field(default_factory=list)
 
 
+# --- Who is asking (resolved server-side, see app/users.py) ---------------------
+Role = Literal["manager", "hr", "employee"]
+
+
+@dataclass(frozen=True)
+class Identity:
+    user: str
+    role: Role
+    team: str                 # memory scope boundary when policy.memory.scope == "team"
+    display_name: str
+
+
 # --- API ------------------------------------------------------------------------
 class ChatRequest(BaseModel):
-    user: str
-    role: Literal["manager", "hr", "employee"]
+    # No user / role / team here: identity comes from the X-Demo-User header and
+    # app.users.DEMO_USERS, never from the request body.
     project: str
     session_id: str
     message: str

@@ -2,16 +2,22 @@
 
 query_hr(query: StructuredQuery)
   1. validate (pydantic) → on error return a short message so the LLM can retry
-  2. cells = query.executor.run_query(db, query, clock.now())
-  3. history = memory.releases.load_history(...)   ([] when memory is off)
+  2. L1 pre-check BEFORE touching data: gate.rules.field_policy(query, who.role, policy);
+     rejected → ledger.append(gate_decision, blocked) and return the reason
+  3. cells = query.executor.run_query(db, query, clock.now())   (QueryError → message)
+  4. targets = memory.releases.release_targets(query, policy)
+     history = memory.releases.load_history(db, who, project, targets, now, policy)
+               ([] when memory is off)
      updated_at = employees.updated_at[query.target] for every id in cells
                   ({} when memory is off or target is None)
-  4. decision = gate.check(query, role, cells, history, updated_at, policy)
-  5. ledger.append(...) always (kind "gate_decision", memory_on = ctx memory flag)
-  6. allowed/partial → memory on:  memory.releases.record_then_release(...) then return cells
-                       memory off: return cells WITHOUT recording a release
-     blocked         → return evidence text, allowed_transforms,
-                       and hints from memory.precedents.search(...)
+  5. decision = gate.check(query, who.role, cells, history, updated_at, policy)
+  6. allowed/partial →
+       memory on:  memory.releases.record_then_release(..., ledger_entry=<gate_decision>)
+                   writes releases + ledger in ONE transaction; only then return cells
+       memory off: ledger.append(gate_decision, memory_on=False); return cells,
+                   no release recorded
+     blocked → ledger.append(gate_decision, blocked); return evidence text,
+               allowed_transforms and hints from memory.precedents.search(...)
 
 Memory off (the left-hand control panel) neither READS nor WRITES releases, so the
 control panel can never pollute the memory-on panel's history. It exists only to show

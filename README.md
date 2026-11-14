@@ -11,7 +11,9 @@ Track: **Memory You Can Govern** (MongoDB Atlas + Vector Search).
 
 ## How a request flows
 
-1. Manager asks a question in plain language (`POST /chat`).
+1. Manager asks a question in plain language (`POST /chat`). The client sends only a user id
+   (`X-Demo-User` header); role and team come from the server-side directory in
+   `app/users.py`, never from the request. (Real deployment: SSO / JWT instead.)
 2. The LLM fills a **structured query** (JSON, whitelisted fields) and calls the `query_hr` tool.
 3. `query/executor.py` turns the JSON into an Atlas aggregation and runs it; results stay on the server.
 4. `gate/check()` decides: **allowed / partial / blocked**, using the user's release history.
@@ -32,6 +34,7 @@ backend/
     db.py                Atlas client, collections, indexes     (Clarice)
     schemas.py           shared data contracts  ← agree Friday  (all)
     clock.py             simulated clock for demo               (Clarice)
+    users.py             demo user directory: id → role, team   (Clarice)
     agent/
       loop.py            LLM tool-calling loop                  (Clarice)
       prompts.py         system prompt                          (Clarice + Qi Jia)

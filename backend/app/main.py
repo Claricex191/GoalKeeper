@@ -10,29 +10,52 @@ Routes
 - POST /admin/reset       wipe memory and re-run scripts/warmup.py
 """
 
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from dataclasses import asdict
+
+from fastapi import Depends, FastAPI, HTTPException
 
 from app import clock
 from app.agent.loop import run_agent
-from app.db import get_db
+from app.db import ensure_indexes, get_db
 from app.memory import ledger, precedents, releases
 from app.policy import profiler, store
 from app.review import approvals
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, Identity
+from app.users import DEMO_USERS, current_identity, require_role
 
 
-app = FastAPI(title="Memory-Governed Privacy Agent")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ensure_indexes(get_db())          # validators + indexes; idempotent
+    yield
+
+
+app = FastAPI(title="Memory-Governed Privacy Agent", lifespan=lifespan)
+
+
+@app.get("/demo/users")
+def demo_users() -> list[dict]:
+    """For the frontend's user switcher. Demo only: a real system has no such list."""
+    return [asdict(u) for u in DEMO_USERS.values()]
+
+
+@app.get("/me")
+def me(who: Identity = Depends(current_identity)) -> dict:
+    return asdict(who)
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
-    # TODO: call agent.loop.run_agent(req)
+def chat(req: ChatRequest, who: Identity = Depends(current_identity)) -> ChatResponse:
+    # TODO: call agent.loop.run_agent(req, who)
     raise NotImplementedError
 
 
 @app.post("/review/{approval_id}")
-def review(approval_id: str, approve: bool, transform: str | None = None):
-    # TODO: review.approvals.decide(...); on approve also memory.precedents.save(...)
+def review(approval_id: str, approve: bool, transform: str | None = None,
+           who: Identity = Depends(current_identity)):
+    require_role(who, "hr")
+    # TODO: review.approvals.decide(..., reviewer=who.user); on approve also precedents.save(...)
     raise NotImplementedError
 
 
