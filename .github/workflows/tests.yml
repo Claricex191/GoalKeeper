@@ -1,0 +1,40 @@
+# Runs the backend test suite on every pull request and on pushes to main.
+#
+# No secrets are configured on purpose: tests that need Atlas (executor, releases)
+# skip themselves when MONGODB_URI is absent. Run those locally with your own .env.
+# What runs here: gate cases, users, executor input validation, releases pure helpers.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests (Atlas-backed tests skip without MONGODB_URI)
+        run: python -m pytest -q -rs
