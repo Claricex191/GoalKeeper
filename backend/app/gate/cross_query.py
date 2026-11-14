@@ -26,6 +26,10 @@ person in or out of a population, which A already catches.
 Known limitation: three or more releases can combine to reveal the TOTAL of a 2..k-1
 person group while every pair passes and no single e_i is solvable.
 """
+
+import numpy as np
+from scipy.linalg import null_space
+
 from app.schemas import Cell, Release, UpdatedAt
 
 

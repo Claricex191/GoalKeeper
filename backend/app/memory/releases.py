@@ -7,8 +7,10 @@ conversation. Must be complete and lossless. Governance rules:
 - retention: expires_at tied to the data's validity (TTL index), not to convenience
 - users cannot delete their own releases
 """
-from datetime import datetime
 
+from datetime import datetime, timedelta
+
+from app.config import settings
 from app.schemas import Decision, Release, StructuredQuery
 
 

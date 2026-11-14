@@ -4,7 +4,15 @@ The LLM never writes code or database queries and never sees the release ledger.
 It only (1) fills StructuredQuery, (2) retries with an allowed transform after a block,
 (3) phrases the final answer. Block reasons come from gate.evidence templates.
 """
+
+import json
+
+import anthropic
+
+from app.agent import prompts, tools
+from app.config import settings
 from app.schemas import ChatRequest, ChatResponse
+
 
 MAX_TOOL_CALLS = 6
 MAX_REWRITES = 3

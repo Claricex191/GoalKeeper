@@ -4,6 +4,12 @@ Used only to suggest which rewrite to try first. A precedent can never make the 
 release something it would block.
 """
 
+import voyageai
+from bson import ObjectId
+
+from app import clock
+from app.config import settings
+
 
 def embed(text: str) -> list[float]:
     """Voyage AI embedding of a request description."""

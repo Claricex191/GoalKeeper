@@ -9,6 +9,8 @@ Every entry has `kind`; the validator checks required fields per kind
 Viewed in the Atlas UI during the demo.
 """
 
+from app import clock
+
 
 def append(db, entry: dict) -> None:
     raise NotImplementedError

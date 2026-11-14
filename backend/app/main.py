@@ -9,9 +9,17 @@ Routes
 - POST /admin/simulate-update  (demo) change one employee's sensitive field, e.g. a raise
 - POST /admin/reset       wipe memory and re-run scripts/warmup.py
 """
-from fastapi import FastAPI
 
+from fastapi import FastAPI, HTTPException
+
+from app import clock
+from app.agent.loop import run_agent
+from app.db import get_db
+from app.memory import ledger, precedents, releases
+from app.policy import profiler, store
+from app.review import approvals
 from app.schemas import ChatRequest, ChatResponse
+
 
 app = FastAPI(title="Memory-Governed Privacy Agent")
 

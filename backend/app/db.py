@@ -20,10 +20,21 @@ Vector Search index (create in Atlas UI on `precedents`):
 }
 """
 
+from pymongo import ASCENDING, MongoClient
+from pymongo.database import Database
 
-def get_db():
-    """Return the pymongo Database for settings.mongodb_db."""
-    raise NotImplementedError
+from app.config import settings
+
+
+_client: MongoClient | None = None
+
+
+def get_db() -> Database:
+    """Return the pymongo Database for settings.mongodb_db (one shared client)."""
+    global _client
+    if _client is None:
+        _client = MongoClient(settings.mongodb_uri)
+    return _client[settings.mongodb_db]
 
 
 def ensure_indexes(db) -> None:

@@ -2,6 +2,8 @@
 
 Owner: Wenqian. Can be written and tested offline against the CSV.
 """
+
+from app.gate import cross_query, rules
 from app.schemas import Cell, Decision, Release, StructuredQuery, UpdatedAt
 
 

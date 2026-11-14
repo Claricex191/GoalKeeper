@@ -20,7 +20,18 @@ the attack succeeding without memory; it still runs L1-L2 and is still audited.
 request_review(query, reason)
   → review.approvals.create(...); return approval id + "pending"
 """
+
+from pydantic import ValidationError
+
+from app import clock, gate
+from app.db import get_db
+from app.gate import evidence
+from app.memory import ledger, precedents, releases
+from app.policy import store
+from app.query import executor
+from app.review import approvals
 from app.schemas import StructuredQuery
+
 
 TOOL_SPECS: list[dict] = []   # TODO: build from StructuredQuery.model_json_schema()
 

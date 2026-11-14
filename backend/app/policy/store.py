@@ -5,6 +5,9 @@ Both scripts/seed_policies.py (manual) and policy/profiler.py (agent-drafted)
 only ever create DRAFTS; a human activates them.
 """
 
+from app import clock
+from app.memory import ledger
+
 
 def load_active(db, dataset: str) -> dict:
     """Return the active policy for this dataset (cached; refresh on activation)."""

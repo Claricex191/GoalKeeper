@@ -18,6 +18,13 @@ save the result as a new draft version. Until a human activates it, the new fiel
 unqueryable (L1 default deny).
 """
 
+import json
+
+import anthropic
+
+from app.config import settings
+from app.policy import store
+
 
 def profile_columns(db, dataset: str, sample_size: int = 200,
                     fields: list[str] | None = None) -> list[dict]:

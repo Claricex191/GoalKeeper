@@ -21,8 +21,17 @@ Harness (no database; data from backend/data/ibm_hr.csv)
   (memory scope = team), each with created_at = that step's date;
   [] when memory is false, and memory-off steps are never added to history
 """
+
 import json
+from datetime import datetime
 from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from app.gate import check
+from app.schemas import Cell, Release, StructuredQuery
+
 
 CASES = json.loads((Path(__file__).parent / "cases" / "gate_cases.json").read_text())
 
