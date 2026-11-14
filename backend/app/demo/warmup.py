@@ -50,11 +50,11 @@ def _run(db, session) -> int:
             filters=[{"col": "Department", "op": "=", "val": department},
                      {"col": "JobRole", "op": "=", "val": "Manager"}],
             group_by=[], metric="avg", target="MonthlyIncome")
-        decision = gate.precheck(query, who.role, policy)
+        decision = gate.precheck(query, who, policy)
         if decision is None:
-            cells = executor.run_query(db, query, now, session=session)
+            cells = executor.run_query(db, query, now, who, policy, session=session)
             # No prior releases or changed employees can exist after the guards.
-            decision = gate.check(query, who.role, cells, [], {}, policy)
+            decision = gate.check(query, who, cells, [], {}, policy)
         if decision.status != "allowed" or not decision.cells:
             raise WarmupError(f"{department} warmup was not fully allowed "
                               f"({decision.rule or 'empty population'})")

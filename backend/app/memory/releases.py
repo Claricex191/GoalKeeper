@@ -19,23 +19,23 @@ from datetime import datetime, timedelta
 from app.memory import ledger
 from app.schemas import Decision, Identity, Release, StructuredQuery
 
-METRIC_WORDS = {"avg": "average", "sum": "total", "count": "count"}
+METRIC_WORDS = {"avg": "average", "sum": "total", "count": "count", "median": "median"}
 
 
 # --- pure helpers (no database) -----------------------------------------------------
 def release_targets(query: StructuredQuery, policy: dict) -> list[str]:
     """Which sensitive fields this answer discloses something about.
     - a target (sum / avg)                       → [target]
-    - a pure count filtered on sensitive fields  → those fields (the population itself
+    - a pure count filtered/grouped on sensitive fields → those fields (the population itself
       reveals them, e.g. "Attrition = Yes" tells who left)
     - otherwise                                  → [] (nothing to remember)"""
     if query.target:
         return [query.target]
     sensitive = set(policy["sensitive_targets"])
     found = []
-    for f in query.filters:
-        if f.col in sensitive and f.col not in found:
-            found.append(f.col)
+    for col in [f.col for f in query.filters] + list(query.group_by):
+        if col in sensitive and col not in found:
+            found.append(col)
     return found
 
 
@@ -104,6 +104,9 @@ def record_then_release(db, decision: Decision, query: StructuredQuery,
     atomically seed both teams alongside the restored data."""
     if session is not None and not session.in_transaction:
         raise ValueError("record_then_release requires an active transaction")
+    if (not isinstance(query, StructuredQuery) or decision.mode != "aggre_stats"
+            or decision.records or decision.status not in ("allowed", "partial")):
+        raise ValueError("only approved aggregate decisions can enter the release ledger")
     docs = []
     for target in release_targets(query, policy):
         expires = now + timedelta(days=retention_days(policy, target))

@@ -4,11 +4,13 @@ Rule ids (used in Decision.rule, suppressed[].reason, the ledger and the tests):
   L1.identifier    an identifier (policy never_return, or labelled "identifier") is used
                    anywhere: filter, group_by or target (e.g. EmployeeNumber = 1306)
   L1.unlabelled    a column the active policy has not labelled (default deny)
-  L1.filter_field  a filter / group_by column that is not a quasi-identifier. Sensitive
-                   fields may only be the target: "count where MonthlyIncome > X" would
-                   let anyone close in on a salary, and counts are not checked by L4
+  L1.filter_field  a filter / group_by column that is not an approved quasi-identifier.
+                   Threshold filters on salaries and ratings remain prohibited; an
+                   aggregate grant does not authorize every query construction.
   L1.malformed     count with a target, or sum / avg / max / min without one
-  L1.role          this role may not use this target or metric (unknown role → deny)
+  L1.role          role lacks the requested category/operation (unknown role → deny)
+  L1.scope         missing assignment or data outside the authorized department
+  L1.metric        statistic is not applicable to the target field
   L1.extreme       max / min of a sensitive target: always one person's exact value,
                    whatever the group size
   L2.min_n         cell with fewer than k people (counts too)
@@ -16,56 +18,97 @@ Rule ids (used in Decision.rule, suppressed[].reason, the ledger and the tests):
   L3.secondary     extra cell hidden so subtraction from a total does not isolate
                    one protected group or a group with fewer than k people
 """
-from app.schemas import Cell, StructuredQuery
+from math import isfinite
+
+from app.policy.access import authorized_departments, permits_field
+from app.schemas import Cell, Identity, IndividualQuery, StructuredQuery
 
 EXTREME_METRICS = {"max", "min"}
 
 
-def field_policy(query: StructuredQuery, role: str, policy: dict) -> dict | None:
-    """L1. Return evidence for the first violation, else None.
+def field_policy(query: StructuredQuery | IndividualQuery, who: Identity,
+                 policy: dict) -> dict | None:
+    """Authorize every field and operation before any database read.
 
-    Looks at the query only, so it runs before the executor (gate.precheck): a rejected
-    query never reaches the database. Evidence:
-      {"rule", "fields" (offending columns), "role", "metric", "target", "allowed_fields"}
+    Query filters may narrow server-owned scope, never replace it. A business grant
+    is only permission to compute; aggregate results still need L2–L4 approval.
     """
+    role = who.role if isinstance(who, Identity) else "unknown"
+    individual = isinstance(query, IndividualQuery)
+    mode = "individual" if individual else "aggre_stats"
+    metric = "individual" if individual else query.metric
+    target = None if individual else query.target
     labels = policy["field_labels"]
     never = set(policy.get("never_return", []))
     quasi = list(policy["quasi_identifiers"])
-    grouping = [f.col for f in query.filters] + list(query.group_by)
-    columns = grouping + ([query.target] if query.target is not None else [])
 
-    def violation(rule: str, fields: list[str] | tuple = ()) -> dict:
+    def violation(rule: str, fields=()) -> dict:
+        allowed = [c for c in quasi if isinstance(who, Identity)
+                   and permits_field(who, policy, c, mode)]
         return {"rule": rule, "fields": sorted(set(fields)), "role": role,
-                "metric": query.metric, "target": query.target, "allowed_fields": quasi}
+                "metric": metric, "target": target, "allowed_fields": allowed}
 
+    if (not isinstance(who, Identity) or policy.get("schema_version") != 2
+            or role not in policy["roles"]
+            or not any(mode in modes for modes in policy["roles"][role].get("grants", {}).values())):
+        return violation("L1.role")
+    try:
+        departments = authorized_departments(who, policy)
+    except PermissionError:
+        return violation("L1.scope")
+
+    grouping = [] if individual else [f.col for f in query.filters] + list(query.group_by)
+    columns = query.fields if individual else grouping + ([target] if target else [])
     bad = [c for c in columns if c in never or labels.get(c) == "identifier"]
     if bad:
         return violation("L1.identifier", bad)
-    bad = [c for c in columns if c not in labels]
+    bad = [c for c in columns if c not in labels or c not in policy["field_categories"]]
     if bad:
         return violation("L1.unlabelled", bad)
+    bad = [c for c in columns if not permits_field(who, policy, c, mode)]
+    if bad:
+        return violation("L1.role", bad)
+    if individual:
+        return None
+
     bad = [c for c in grouping if c not in quasi]
     if bad:
         return violation("L1.filter_field", bad)
-    if (query.metric == "count") != (query.target is None):
+    if (metric == "count") != (target is None):
         return violation("L1.malformed")
-    perms = policy["roles"].get(role)
-    if perms is None:
+    # A targetless count is an employee/basic-information statistic, not a free
+    # capability inherited from having aggregate access to some unrelated category.
+    if metric == "count" and "aggre_stats" not in policy["roles"][role]["grants"].get("other_basic", []):
         return violation("L1.role")
-    if query.target is not None and query.target not in role_targets(perms, policy):
-        return violation("L1.role")
-    if query.metric in EXTREME_METRICS:
+    if departments is not None:
+        for filt in query.filters:
+            if filt.col != "Department":
+                continue
+            if filt.op == "=" and filt.val not in departments:
+                return violation("L1.scope", ["Department"])
+            if filt.op == "in" and (not isinstance(filt.val, list)
+                                    or not set(filt.val).issubset(departments)):
+                return violation("L1.scope", ["Department"])
+    if metric in EXTREME_METRICS:
         return violation("L1.extreme")
-    if query.metric not in perms["metrics"]:
-        return violation("L1.role")
+    if target is not None and metric not in policy["field_metrics"].get(target, []):
+        return violation("L1.metric", [target])
     return None
 
 
-def role_targets(perms: dict, policy: dict) -> set[str]:
-    """Targets a role may query. "*" means every sensitive target. A field that is not a
-    sensitive target is never a target (v1), even if a role lists it."""
-    sensitive = set(policy["sensitive_targets"])
-    return sensitive if "*" in perms["targets"] else sensitive & set(perms["targets"])
+def effective_k(query: StructuredQuery, policy: dict) -> int:
+    """The five-person floor cannot be lowered by a policy or an individual grant."""
+    k = max(5, int(policy["k_threshold"]))
+    return max(k, 10, int(policy.get("median_threshold", 10))) if query.metric == "median" else k
+
+
+def check_cell_scope(cells: list[Cell], who: Identity, policy: dict) -> dict | None:
+    departments = authorized_departments(who, policy)
+    if departments is not None and any(
+        not c.departments or not c.departments.issubset(departments) for c in cells
+    ):
+        return {"rule": "L1.scope", "role": who.role}
+    return None
 
 
 def cell_checks(cells: list[Cell], query: StructuredQuery,
@@ -78,11 +121,15 @@ def cell_checks(cells: list[Cell], query: StructuredQuery,
     view; the public view shows only the hidden keys.
 
     A target query whose cells lack vmin / vmax raises, so check() blocks it (fail closed).
-    Not implemented: dominance (one person > dominance_share of the total), median.
+    Not implemented: dominance (one person > dominance_share of the total).
     """
-    k = policy["k_threshold"]
+    k = effective_k(query, policy)
     kept, suppressed = [], []
     for cell in cells:
+        if cell.n != len(cell.ids) or cell.n < 0:
+            raise ValueError("cell population count does not match its employee ids")
+        if query.target is not None and (cell.value is None or not isfinite(cell.value)):
+            raise ValueError("target result must be finite")
         if cell.n < k:
             reason = "L2.min_n"
         elif query.target is not None and _homogeneous(cell):
@@ -98,6 +145,8 @@ def _homogeneous(cell: Cell) -> bool:
     if cell.vmin is None or cell.vmax is None:
         raise ValueError(f"cell {cell.key} has no vmin/vmax; the executor must supply "
                          "them for every target query")
+    if not isfinite(cell.vmin) or not isfinite(cell.vmax) or cell.vmin > cell.vmax:
+        raise ValueError("target bounds must be finite and ordered")
     return cell.vmin == cell.vmax
 
 

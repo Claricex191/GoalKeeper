@@ -12,18 +12,13 @@ from bson.int64 import Int64
 from app import clock, gate
 from app.demo import warmup
 from app.memory import releases
+from app.policy.defaults import POLICY as DEFAULT_POLICY
 from app.query import executor
 from app.schemas import Cell, Decision, Release, StructuredQuery
+from app.users import DEMO_USERS
 
 
-POLICY = {
-    "version": 3, "k_threshold": 5, "sensitive_targets": ["MonthlyIncome"],
-    "quasi_identifiers": ["Department", "JobRole"], "never_return": [],
-    "field_labels": {"Department": "quasi_identifier", "JobRole": "quasi_identifier",
-                     "MonthlyIncome": "sensitive"},
-    "roles": {"manager": {"targets": ["MonthlyIncome"], "metrics": ["avg"]}},
-    "memory": {"scope": "team", "retention_days": 730},
-}
+POLICY = {**deepcopy(DEFAULT_POLICY), "version": 3}
 
 
 class Session:
@@ -68,10 +63,12 @@ def demo(monkeypatch):
     monkeypatch.setattr(clock, "now", lambda **_k: clock.DEMO_START)
     monkeypatch.setattr(warmup.store, "load_active", lambda *_a, **_kw: deepcopy(POLICY))
     cells = {
-        "Sales": Cell({}, set(range(1, 7)), 6, 12000.0, 10000.0, 14000.0),
-        "Human Resources": Cell({}, set(range(10, 16)) | {1408}, 7, 13000.0, 11000.0, 15000.0),
+        "Sales": Cell({}, set(range(1, 7)), 6, 12000.0, 10000.0, 14000.0, {"Sales"}),
+        "Human Resources": Cell({}, set(range(10, 16)) | {1408}, 7, 13000.0,
+                                11000.0, 15000.0, {"Human Resources"}),
     }
-    query_mock = Mock(side_effect=lambda _db, q, _at, **_kw: [cells[q.filters[0].val]])
+    query_mock = Mock(side_effect=lambda _db, q, _at, _who, _policy, **_kw:
+                      [cells[q.filters[0].val]])
     monkeypatch.setattr(executor, "run_query", query_mock)
     return db, cells, query_mock
 
@@ -90,7 +87,7 @@ def test_two_teams_use_real_gate_and_recorded_populations(demo):
         assert doc["session_id"] == entry["session_id"] == "warmup"
         assert doc["created_at"] == entry["time"] == clock.DEMO_START
         assert entry["status"] == "allowed" and entry["memory_on"] is True
-        assert entry["kind"] == "gate_decision" and entry["role"] == "manager"
+        assert entry["kind"] == "gate_decision" and entry["role"] == "department_manager"
         assert entry["policy_version"] == doc["policy_version"] == 3
         assert entry["rule"] is None and entry["evidence_text"] is None
         assert "value" not in doc and "value" not in entry
@@ -124,9 +121,10 @@ def test_seeded_history_blocks_hire_and_raise_but_allows_memory_off(demo):
         else:
             updated_at = {1408: {"MonthlyIncome": clock.DEMO_START + timedelta(days=2)}}
         query = StructuredQuery(**entry["query"])
-        decision = gate.check(query, "manager", [current], [old], updated_at, POLICY)
+        who = DEMO_USERS[entry["user"]]
+        decision = gate.check(query, who, [current], [old], updated_at, POLICY)
         assert (decision.status, decision.rule) == ("blocked", "L4.pairwise")
-        assert gate.check(query, "manager", [current], [], {}, POLICY).status == "allowed"
+        assert gate.check(query, who, [current], [], {}, POLICY).status == "allowed"
 
 
 @pytest.mark.parametrize("change, message", [
@@ -152,7 +150,8 @@ def test_missing_data_is_reported(demo):
 
 def test_both_gate_decisions_are_checked_before_writing(demo):
     db, cells, _ = demo
-    cells["Human Resources"] = Cell({}, {10, 11}, 2, 13000.0, 11000.0, 15000.0)
+    cells["Human Resources"] = Cell({}, {10, 11}, 2, 13000.0, 11000.0,
+                                    15000.0, {"Human Resources"})
     with pytest.raises(warmup.WarmupError, match="L2.min_n"):
         warmup.run_warmup(db)
     db.releases.insert_many.assert_not_called()
@@ -216,27 +215,35 @@ def test_release_writer_rejects_unstarted_shared_session(demo):
 def test_transaction_schema_bypasses_and_does_not_poison_cache(monkeypatch):
     executor.clear_cache()
     db = SimpleNamespace(employees=SimpleNamespace(find_one=Mock(return_value={"Salary": int(1)})))
-    assert executor.field_types(db) == {"Salary": int}
+    assert executor.field_types(db, clock.DEMO_START, ("Sales",)) == {"Salary": int}
     db.employees.find_one.return_value = {"Salary": 1.5}
-    assert executor.field_types(db, session=object()) == {"Salary": float}
-    assert executor.field_types(db) == {"Salary": int}
+    assert executor.field_types(db, clock.DEMO_START, ("Sales",),
+                                session=object()) == {"Salary": float}
+    assert executor.field_types(db, clock.DEMO_START, ("Sales",)) == {"Salary": int}
     executor.clear_cache()
-    assert executor.field_types(db) == {"Salary": float}
+    assert executor.field_types(db, clock.DEMO_START, ("Sales",)) == {"Salary": float}
     executor.clear_cache()
 
 
 @pytest.mark.parametrize("value", [-(2 ** 63), 2 ** 63 - 1])
 @pytest.mark.parametrize("session", [None, object()], ids=["cached", "transaction"])
-def test_bson_int64_remains_numeric_after_round_trip(value, session, monkeypatch):
+@pytest.mark.parametrize("metric", ["avg", "sum", "median"])
+def test_bson_int64_remains_numeric_after_round_trip(value, session, metric, monkeypatch):
     stored = BSON.encode({"MonthlyIncome": value, "flag": True}).decode()
     assert type(stored["MonthlyIncome"]) is Int64
     monkeypatch.setattr(executor, "_field_types_cache", None)
-    db = SimpleNamespace(employees=SimpleNamespace(find_one=Mock(return_value=stored)))
-    types = executor.field_types(db, session=session)
+    row = BSON.encode({"_id": None, "ids": [1, 2, 3, 4, 5], "n": 5,
+                       "departments": ["Sales"], "values": [value] * 5}).decode()
+    db = SimpleNamespace(employees=SimpleNamespace(find_one=Mock(return_value=stored),
+                                                  aggregate=Mock(return_value=[row])))
+    types = executor.field_types(db, clock.DEMO_START, ("Sales",), session=session)
     assert types == {"MonthlyIncome": int, "flag": bool}
-    query = StructuredQuery(metric="avg", target="MonthlyIncome")
-    pipeline = executor.build_pipeline(query, clock.DEMO_START, types)
-    assert pipeline[1]["$group"]["value"] == {"$avg": "$MonthlyIncome"}
+    query = StructuredQuery(metric=metric, target="MonthlyIncome")
+    who = DEMO_USERS["hr_1"]
+    pipeline = executor.build_pipeline(query, clock.DEMO_START, types, who, POLICY)
+    assert pipeline[1]["$group"]["values"] == {"$push": "$MonthlyIncome"}
+    [cell] = executor.run_query(db, query, clock.DEMO_START, who, POLICY, session=session)
+    assert cell.value == pytest.approx(float(value * (5 if metric == "sum" else 1)))
+    assert cell.n == 5 and cell.departments == {"Sales"}
     with pytest.raises(executor.QueryError, match="not numeric"):
-        executor.build_pipeline(StructuredQuery(metric="avg", target="flag"),
-                                clock.DEMO_START, types)
+        executor.build_pipeline(query, clock.DEMO_START, {"MonthlyIncome": bool}, who, POLICY)

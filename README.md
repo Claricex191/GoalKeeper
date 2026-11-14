@@ -15,7 +15,10 @@ Track: **Memory You Can Govern** (MongoDB Atlas + Vector Search).
    (`X-Demo-User` header); role and team come from the server-side directory in
    `app/users.py`, never from the request. (Real deployment: SSO / JWT instead.)
 2. The LLM fills a **structured query** (JSON, whitelisted fields) and calls the `query_hr` tool.
-3. `query/executor.py` turns the JSON into an Atlas aggregation and runs it; results stay on the server.
+   Gate checks the server-resolved identity against the eight-role permission matrix
+   before employee data is read. Individual and `aggre_stats` are independent grants.
+3. `query/executor.py` intersects every query with the server-assigned departments.
+   Aggregate cells and explicitly projected Individual records stay on the server.
 4. `gate/check()` decides: **allowed / partial / blocked**, using the user's release history.
    The gate is deterministic Python: no LLM in the decision.
    The cross-query check counts both people who joined or left a population and people
@@ -23,6 +26,12 @@ Track: **Memory You Can Govern** (MongoDB Atlas + Vector Search).
 5. Allowed cells are **written to the release ledger first, then returned** (write-before-release).
 6. If blocked, the LLM gets the evidence plus allowed rewrites, retries (max 3), or calls `request_review`.
 7. Reviewer approvals become precedents (vector-indexed) that guide the next similar request.
+
+The implemented query handler enforces authorization, scope and write-before-release.
+The surrounding `/chat` LLM loop and review endpoints remain TODOs. The full role and
+field mapping is in [the policy specification](docs/collections.md#policies), with its
+source in `backend/app/policy/defaults.py`. Existing v1 policies must be replaced with
+a v2 policy before queries are served; the new code denies legacy flat grants.
 
 ## Layout and owners
 
@@ -75,7 +84,7 @@ python -m venv .venv && source .venv/bin/activate   # Python 3.11 or 3.12
 pip install -r requirements.txt
 cp .env.example .env                                 # fill in keys
 python scripts/load_data.py
-python scripts/seed_policies.py --approved-by "hr_1"
+python scripts/seed_policies.py --approved-by "<your name>"
 python scripts/warmup.py                            # clean Monday, once per reset
 uvicorn app.main:app --reload
 
@@ -97,15 +106,20 @@ ledger remains intact. The CSV must already exist on the API host; reset never d
 data or drops the employees collection. MongoDB must support transactions (Atlas or a
 replica set).
 
-For both scenarios in one run: reset, advance **2 days**, update employee **1408**'s
+For both scenarios in one run, select **`hr_1` (HR Head)**: reset, advance **2 days**, update employee **1408**'s
 `MonthlyIncome` to **18500**, then advance **1 day**. Ask the Sales Manager question as
 `mgr_1`, and switch to **`mgr_4`** for the HR Manager question so each reads the correct
-team's Monday history. These controls accept all authenticated demo identities;
-policy management is HR-only. See [frontend/API.md](frontend/API.md) for errors and
+team's Monday history. Demo changes and policy management require **`hr_head`**;
+all authenticated users can read the clock. See [frontend/API.md](frontend/API.md) for errors and
 reset semantics.
 
-The real `/chat`, agent tool handlers and reviewer workflow remain implementation
-stubs. `npm run dev:mock` provides the scripted two-scenario UI rehearsal.
+Reset keeps the audit ledger and starts a new L5 counting interval, so previous runs
+do not immediately trigger a new review. Successful API resets also clear this server's
+chat context. Query roles, category grants and department scopes follow the v2 policy;
+an old active policy must be upgraded with `scripts/seed_policies.py` before the demo.
+
+The real `/chat`, agent tools, reviewer routes and semantic precedents are connected.
+`npm run dev:mock` provides the scripted two-scenario UI rehearsal without external services.
 
 ### Your own `.env` (keys and connection string)
 
@@ -127,8 +141,25 @@ mistake, rotate it (create a new one); deleting the commit is not enough.
 
 IBM HR Analytics Employee Attrition & Performance: a **fictional** dataset of 1,470 employees
 created by IBM data scientists as Watson Analytics sample data. License: ODbL / DbCL, as stated
-in IBM's `employee-attrition-aif360` repository. Downloaded from OpenML (data id 43896).
+in IBM's `employee-attrition-aif360` repository. The loader can download from OpenML
+(data id 43896); the source of the CSV used for validation is recorded below.
 No real person's data is used.
+
+### Validate with the complete CSV
+
+From `backend/`, install `requirements-test.txt`, then run:
+
+```bash
+python scripts/load_data.py --dry-run
+python -m pytest -q tests/test_gate.py tests/test_ibm_csv_permissions.py
+```
+
+The CSV tests require all 1,470 rows and 35 original fields. They run the actual
+loader, query executor and Gate against a local `mongomock` database, and compare
+statistics and employee populations with an independent CSV calculation. This does
+not replace the separate Atlas integration tests. The local CSV is ignored by Git;
+`backend/data/ibm_hr.source.json` records the pinned IBM source and SHA-256 of the
+file used for validation.
 
 ## Prior work we build on
 

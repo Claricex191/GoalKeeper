@@ -17,7 +17,10 @@ def reset_demo(db):
     with operation_lock:
         baseline = {doc["EmployeeNumber"]: doc for doc in load_baseline()}
         store.clear_cache()
-        store.load_active(db, DATASET)
+        try:
+            store.load_active(db, DATASET)
+        except ValueError as exc:
+            raise LookupError("an active v2 policy is required; run scripts/seed_policies.py") from exc
 
         def reset_transaction(session):
             at = clock.reset(db=db, session=session)
@@ -36,6 +39,12 @@ def reset_demo(db):
             db.approvals.delete_many({"kind": "review"}, session=session)
             db.approvals.update_one({"_id": "kill_switch"}, {"$set": {"active": False}},
                                     session=session)
+            # Keep the append-only audit, but start a new L5 counting interval.
+            # Use the same ObjectId ordering as reviewer reset_after in main.
+            latest = db.ledger.find_one({}, {"_id": 1}, sort=[("_id", -1)], session=session)
+            db.meta.update_one({"_id": "demo_reset"},
+                               {"$set": {"ledger_after": latest["_id"] if latest else None}},
+                               upsert=True, session=session)
             executor.clear_cache()
             run_warmup(db, session=session)
             return at

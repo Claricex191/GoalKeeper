@@ -1,15 +1,26 @@
 // Scripted in-browser backend for `npm run dev:mock`: lets the UI be built and
-// rehearsed before the real /chat exists. Numbers are the real IBM HR values for
+// rehearsed without a live backend. Numbers are the real IBM HR values for
 // Act 1 (new hire) and Act 2 (raise); everything else returns a generic answer.
 // Response shapes follow ../API.md; this is a scripted rehearsal, not the real gate.
 
 const USERS = [
-  { user: "mgr_1", role: "manager", team: "sales", display_name: "Manager 1 (Sales)" },
-  { user: "mgr_2", role: "manager", team: "sales", display_name: "Manager 2 (Sales)" },
-  { user: "mgr_3", role: "manager", team: "rnd", display_name: "Manager 3 (R&D)" },
-  { user: "mgr_4", role: "manager", team: "hr", display_name: "Manager 4 (HR dept.)" },
-  { user: "hr_1", role: "hr", team: "hr", display_name: "HR analyst / reviewer" },
+  { user: "mgr_1", role: "department_manager", team: "sales", departments: ["Sales"], display_name: "Manager 1 (Sales)" },
+  { user: "mgr_2", role: "department_manager", team: "sales", departments: ["Sales"], display_name: "Manager 2 (Sales)" },
+  { user: "mgr_3", role: "department_manager", team: "rnd", departments: ["Research & Development"], display_name: "Manager 3 (R&D)" },
+  { user: "mgr_4", role: "department_manager", team: "hr", departments: ["Human Resources"], display_name: "Manager 4 (HR dept.)" },
+  { user: "hr_1", role: "hr_head", team: "hr", departments: ["Human Resources"], display_name: "HR Head" },
+  { user: "ceo_1", role: "ceo", team: "executive", departments: [], display_name: "CEO" },
+  { user: "vp_1", role: "vp", team: "sales", departments: ["Sales"], display_name: "VP (Sales)" },
+  { user: "salary_1", role: "hr_salary_manager", team: "hr", departments: ["Human Resources"], display_name: "HR Salary Manager" },
+  { user: "dept_hr_1", role: "department_hr_manager", team: "sales", departments: ["Sales"], display_name: "Department HR Manager (Sales)" },
+  { user: "ordinary_hr_1", role: "ordinary_hr", team: "hr", departments: ["Human Resources"], display_name: "Ordinary HR" },
+  { user: "emp_1", role: "employee", team: "sales", departments: ["Sales"], display_name: "Employee (Sales)" },
 ];
+// Grants for the two scripted salary aggregates, matching policy/defaults.py.
+const COMPANY_SCOPE_ROLES = new Set(["ceo", "hr_head", "hr_salary_manager"]);
+const SALARY_AGGREGATE_ROLES = new Set([
+  ...COMPANY_SCOPE_ROLES, "vp", "department_hr_manager", "department_manager",
+]);
 const DEMO_START = Date.UTC(2026, 10, 9, 9, 0); // Mon 2026-11-09 09:00 UTC
 const DAY = 86400000;
 const PROJECT = "comp-review-2026";
@@ -22,14 +33,14 @@ const eq = (col, val) => ({ col, op: "=", val });
 const SCENARIOS = {
   sales_mgr: {
     match: (m) => /sales/i.test(m) && /manager/i.test(m),
-    query: { filters: [eq("Department", "Sales"), eq("JobRole", "Manager")], group_by: [],
+    query: { mode: "aggre_stats", filters: [eq("Department", "Sales"), eq("JobRole", "Manager")], group_by: [],
              metric: "avg", target: "MonthlyIncome", transform: null },
     label: "Sales managers, average monthly income",
     result: (day) => (day >= 3 ? { n: 37, value: 16986.97 } : { n: 36, value: 17111.5 }),
     // what changed between an earlier release (on `then`) and now
     changes: (then, now) => ({ joined: then < 3 && now >= 3 ? 1 : 0, valueChanged: 0 }),
     widened: {
-      query: { filters: [eq("Department", "Sales")], group_by: [], metric: "avg",
+      query: { mode: "aggre_stats", filters: [eq("Department", "Sales")], group_by: [], metric: "avg",
                target: "MonthlyIncome", transform: "T3_widen_scope" },
       result: (day) => (day >= 3 ? { n: 446, value: 6959.17 } : { n: 445, value: 6946.71 }),
       label: "the whole Sales department",
@@ -37,14 +48,14 @@ const SCENARIOS = {
   },
   hr_mgr: {
     match: (m) => /(hr|human resources)/i.test(m) && /manager/i.test(m),
-    query: { filters: [eq("Department", "Human Resources"), eq("JobRole", "Manager")],
+    query: { mode: "aggre_stats", filters: [eq("Department", "Human Resources"), eq("JobRole", "Manager")],
              group_by: [], metric: "avg", target: "MonthlyIncome", transform: null },
     label: "HR managers, average monthly income",
     result: () => ({ n: 11, value: state.raisedAt !== null ? 18243.27 : 18088.64 }),
     changes: (then) => ({ joined: 0,
                           valueChanged: state.raisedAt !== null && state.raisedAt > then ? 1 : 0 }),
     widened: {
-      query: { filters: [eq("Department", "Human Resources")], group_by: [], metric: "avg",
+      query: { mode: "aggre_stats", filters: [eq("Department", "Human Resources")], group_by: [], metric: "avg",
                target: "MonthlyIncome", transform: "T3_widen_scope" },
       result: () => ({ n: 63, value: state.raisedAt !== null ? 6681.51 : 6654.51 }),
       label: "the whole HR department",
@@ -104,6 +115,17 @@ async function chat(userId, { message, memory = true, project = PROJECT }) {
   }
   const s = SCENARIOS[key];
   const base = { tool: "query_hr", memory_on: memory, suppressed: [], hints: [] };
+  const department = s.query.filters.find((f) => f.col === "Department").val;
+  if (!SALARY_AGGREGATE_ROLES.has(who.role)) {
+    const reason = `Your role (${who.role}) cannot ask for avg of MonthlyIncome.`;
+    return { reply: reason, trace: [{ ...base, query: s.query, status: "blocked",
+      rule: "L1.role", evidence_text: reason, cells: [], allowed_transforms: [] }] };
+  }
+  if (!COMPANY_SCOPE_ROLES.has(who.role) && !who.departments.includes(department)) {
+    const reason = "This request is outside your authorized employee scope.";
+    return { reply: reason, trace: [{ ...base, query: s.query, status: "blocked",
+      rule: "L1.scope", evidence_text: reason, cells: [], allowed_transforms: [] }] };
+  }
   const r = s.result(day());
 
   if (memory) {
@@ -158,6 +180,11 @@ async function chat(userId, { message, memory = true, project = PROJECT }) {
 
 export function api(getUser) {
   const current = () => identity(getUser());
+  const requireHrHead = () => {
+    const who = current();
+    if (who.role !== "hr_head") throw new Error("403: HR Head role required");
+    return who;
+  };
   return {
     users: async () => USERS,
     chat: (payload) => chat(getUser(), payload),
@@ -166,7 +193,7 @@ export function api(getUser) {
       return { now: nowIso(), offset_days: state.offset };
     },
     advanceClock: async (days) => {
-      current();
+      requireHrHead();
       const delta = numeric(days);
       const next = state.offset + delta;
       const timestamp = DEMO_START + next * DAY;
@@ -180,7 +207,7 @@ export function api(getUser) {
       return { now: nowIso(), offset_days: state.offset };
     },
     simulateUpdate: async (employee_number, field, new_value) => {
-      current();
+      requireHrHead();
       if (numeric(employee_number) !== 1408 || field !== "MonthlyIncome" ||
           numeric(new_value) !== 18500) {
         throw new Error("400: mock supports only employee 1408, MonthlyIncome = 18500");
@@ -190,16 +217,16 @@ export function api(getUser) {
       return { ok: true };
     },
     reset: async () => {
-      current();
+      requireHrHead();
       resetState();
       return { ok: true, now: nowIso() };
     },
     pendingReviews: async () => {
-      if (current().role !== "hr") throw new Error("403: HR role required");
+      requireHrHead();
       return [];
     },
     decideReview: async () => {
-      if (current().role !== "hr") throw new Error("403: HR role required");
+      requireHrHead();
       return { ok: true };
     },
   };

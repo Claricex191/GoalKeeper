@@ -4,6 +4,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from bson import ObjectId
 import pytest
 
 from app import clock
@@ -43,7 +44,8 @@ def demo(monkeypatch):
     ]
     state = {
         "offset": 3, "employees": deepcopy(originals), "releases": [{"old": True}],
-        "precedents": [{"old": True}], "ledger": [{"kind": "old_audit"}],
+        "precedents": [{"old": True}],
+        "ledger": [{"_id": ObjectId(), "kind": "old_audit"}], "meta": {"ledger_after": None},
         "approvals": [{"kind": "review"}, {"_id": "kill_switch", "active": True},
                       {"_id": "unrelated_control"}],
     }
@@ -81,7 +83,19 @@ def demo(monkeypatch):
         next(doc for doc in state["approvals"] if doc.get("_id") == "kill_switch").update(update["$set"])
 
     db.approvals.update_one = Mock(side_effect=switch)
-    db.ledger = SimpleNamespace(delete_many=Mock(side_effect=AssertionError("append-only ledger")))
+    def latest(_query, _projection, *, sort, session):
+        record(session)
+        assert sort == [("_id", -1)]
+        return max(state["ledger"], key=lambda doc: doc["_id"]) if state["ledger"] else None
+
+    def cutoff(query, update, *, upsert, session):
+        record(session)
+        assert query == {"_id": "demo_reset"} and upsert
+        state["meta"].update(update["$set"])
+
+    db.ledger = SimpleNamespace(delete_many=Mock(side_effect=AssertionError("append-only ledger")),
+                                find_one=Mock(side_effect=latest))
+    db.meta = SimpleNamespace(update_one=Mock(side_effect=cutoff))
 
     def rewind(*, db, session):
         record(session)
@@ -93,7 +107,7 @@ def demo(monkeypatch):
         assert state["employees"] == originals and state["offset"] == 0
         assert not state["releases"] and not state["precedents"]
         state["releases"].extend([{"team": "sales"}, {"team": "hr"}])
-        state["ledger"].extend([{"kind": "gate_decision"}] * 2)
+        state["ledger"].extend([{"_id": ObjectId(), "kind": "gate_decision"} for _ in range(2)])
         return 2
 
     monkeypatch.setattr(reset, "load_baseline", lambda: deepcopy(originals))
@@ -113,7 +127,8 @@ def test_reset_restores_only_changed_employee_and_keeps_audit(demo):
     assert state["releases"] == [{"team": "sales"}, {"team": "hr"}]
     assert state["approvals"] == [{"_id": "kill_switch", "active": False},
                                   {"_id": "unrelated_control"}]
-    assert state["ledger"] == [{"kind": "old_audit"}] + [{"kind": "gate_decision"}] * 2
+    assert [entry["kind"] for entry in state["ledger"]] == ["old_audit", "gate_decision", "gate_decision"]
+    assert state["meta"]["ledger_after"] == state["ledger"][0]["_id"]
     db.ledger.delete_many.assert_not_called()
     assert all(session is sessions[0] for session in sessions)
 
@@ -149,6 +164,24 @@ def test_missing_baseline_cannot_start_a_reset(demo, monkeypatch):
     db.employees.find.assert_not_called()
 
 
+def test_reset_replaces_stale_cutoff_when_ledger_empty(demo):
+    db, state, _, _ = demo
+    state["ledger"].clear()
+    state["meta"]["ledger_after"] = ObjectId()
+    reset.reset_demo(db)
+    assert state["meta"]["ledger_after"] is None
+
+
+def test_legacy_policy_cannot_start_reset(demo):
+    db, state, _, _ = demo
+    before = deepcopy(state)
+    reset.store.load_active.side_effect = ValueError("policy schema_version must be 2")
+    with pytest.raises(LookupError, match="active v2 policy"):
+        reset.reset_demo(db)
+    assert state == before
+    db.employees.find.assert_not_called()
+
+
 def test_baseline_missing_is_local_error(tmp_path, monkeypatch):
     monkeypatch.setattr(baseline, "CSV_PATH", tmp_path / "missing.csv")
     with pytest.raises(LookupError, match="local employee baseline"):
@@ -169,8 +202,8 @@ def test_baseline_cache_cannot_be_modified_by_caller(tmp_path, monkeypatch):
 def test_transaction_reads_active_policy_without_using_or_polluting_cache(monkeypatch):
     from app.policy import store
 
-    old = {"version": 1}
-    active = {"version": 2}
+    old = {"version": 1, "schema_version": 2}
+    active = {"version": 2, "schema_version": 2}
     monkeypatch.setattr(store, "_active_cache", {"ibm_hr": old})
     db = SimpleNamespace(policies=SimpleNamespace(find_one=Mock(return_value=active)))
     session = object()
@@ -178,3 +211,12 @@ def test_transaction_reads_active_policy_without_using_or_polluting_cache(monkey
     db.policies.find_one.assert_called_once_with(
         {"dataset": "ibm_hr", "status": "active"}, session=session)
     assert store._active_cache["ibm_hr"] is old
+
+
+def test_transaction_cannot_bypass_policy_schema_check(monkeypatch):
+    from app.policy import store
+
+    monkeypatch.setattr(store, "_active_cache", {"ibm_hr": {"schema_version": 2}})
+    db = SimpleNamespace(policies=SimpleNamespace(find_one=Mock(return_value={"version": 1})))
+    with pytest.raises(ValueError, match="schema_version must be 2"):
+        store.load_active(db, "ibm_hr", session=object())

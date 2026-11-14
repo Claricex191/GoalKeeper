@@ -26,7 +26,6 @@ from pathlib import Path
 
 import pandas as pd
 from pymongo import ASCENDING
-from sklearn.datasets import fetch_openml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `app` importable
 
@@ -39,6 +38,8 @@ OPENML_ID = 43896
 def read_dataset() -> pd.DataFrame:
     """Local CSV if present; otherwise download from OpenML and cache it."""
     if not CSV_PATH.exists():
+        from sklearn.datasets import fetch_openml
+
         print(f"downloading OpenML {OPENML_ID} ...")
         df = fetch_openml(data_id=OPENML_ID, as_frame=True).frame
         CSV_PATH.parent.mkdir(parents=True, exist_ok=True)

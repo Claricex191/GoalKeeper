@@ -19,12 +19,15 @@ from math import isfinite
 from fastapi import Depends, FastAPI, HTTPException, Query
 
 from app import clock
+from app.agent.loop import SESSIONS, run_agent
 from app.db import ensure_indexes, get_db
 from app.demo.reset import reset_demo
 from app.demo.state import operation_lock
 from app.memory import ledger
 from app.policy import store
+from app.policy.access import authorized_departments
 from app.query import executor
+from app.review import approvals
 from app.schemas import ChatRequest, ChatResponse, Identity
 from app.users import DEMO_USERS, current_identity, require_role
 
@@ -51,33 +54,44 @@ def me(who: Identity = Depends(current_identity)) -> dict:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, who: Identity = Depends(current_identity)) -> ChatResponse:
-    # TODO: call agent.loop.run_agent(req, who)
-    raise NotImplementedError
+    return run_agent(req, who)
+
+
+@app.get("/review/pending")
+def review_pending(who: Identity = Depends(current_identity)) -> list[dict]:
+    """L5 review requests waiting for the HR head (frontend ReviewerPanel)."""
+    require_role(who, "hr_head")
+    return approvals.list_pending(get_db())
 
 
 @app.post("/review/{approval_id}")
 def review(approval_id: str, approve: bool, transform: str | None = None,
            who: Identity = Depends(current_identity)):
-    require_role(who, "hr")
-    # TODO: review.approvals.decide(..., reviewer=who.user); on approve also precedents.save(...)
-    raise NotImplementedError
+    """Approve or reject a pending review; either way the field is unlocked for that
+    user and the L5 count restarts. A review never grants access the policy denies."""
+    require_role(who, "hr_head")
+    if not approvals.decide(get_db(), approval_id, approve, transform, who.user, clock.now()):
+        raise HTTPException(404, "no pending review with this id")
+    return {"ok": True}
 
 
 @app.post("/admin/policy/draft")
 def policy_draft(dataset: str, who: Identity = Depends(current_identity)):
-    require_role(who, "hr")
+    require_role(who, "hr_head")
     # STRETCH: policy.profiler.draft_policy(db, dataset) → returns draft version for review
     raise NotImplementedError
 
 
 @app.post("/admin/policy/{version}/activate")
 def policy_activate(version: int, dataset: str, who: Identity = Depends(current_identity)):
-    require_role(who, "hr")
+    require_role(who, "hr_head")
     with operation_lock:
         try:
             store.activate(get_db(), dataset, version, approved_by=who.user)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -94,6 +108,7 @@ def read_admin_clock(who: Identity = Depends(current_identity)):
 
 @app.post("/admin/clock")
 def admin_clock(days: float, who: Identity = Depends(current_identity)):
+    require_role(who, "hr_head")
     with operation_lock:
         try:
             return _clock_response(clock.advance(days, db=get_db()))
@@ -116,15 +131,12 @@ def _update_value(field: str, raw: str, types: dict[str, type]):
             if not isfinite(value):
                 raise ValueError
             return value
-        if want is str and field == "Attrition" and raw in {"Yes", "No"}:
-            return raw
     except (ValueError, InvalidOperation, OverflowError):
         pass
     if want is None:
         raise HTTPException(status_code=503, detail="employee field schema is not loaded")
-    detail = ("Attrition must be Yes or No" if field == "Attrition"
-              else f"{field} requires a finite {want.__name__} value")
-    raise HTTPException(status_code=400, detail=detail)
+    raise HTTPException(status_code=400,
+                        detail=f"{field} requires a finite {want.__name__} value")
 
 
 @app.post("/admin/simulate-update")
@@ -133,7 +145,7 @@ def admin_simulate_update(field: str, new_value: str,
                           who: Identity = Depends(current_identity)):
     """Demo stand-in for a real HR system write (e.g. a raise).
 
-    - `field` must be one of the active policy's sensitive_targets (else 400).
+    - `field` must be one of the active policy's tracked_targets (else 400).
     - In one update on employees: set `<field>` = new_value AND
       `updated_at.<field>` = clock.now() (the simulated clock, so it is comparable
       with releases.created_at).
@@ -143,6 +155,7 @@ def admin_simulate_update(field: str, new_value: str,
     In a real deployment this endpoint does not exist: an Atlas change stream or
     Atlas Trigger sets updated_at.<field> whenever a sensitive field is modified.
     """
+    require_role(who, "hr_head")
     with operation_lock:
         db = get_db()
 
@@ -155,23 +168,40 @@ def admin_simulate_update(field: str, new_value: str,
                                upsert=True, session=session)
             try:
                 policy = store.load_active(db, "ibm_hr", session=session)
-            except LookupError as exc:
+            except (LookupError, ValueError) as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-            if (field not in policy["sensitive_targets"] or field.startswith("$")
+            if (field not in policy["tracked_targets"] or field.startswith("$")
                     or "." in field or field in executor.SYSTEM_FIELDS):
-                raise HTTPException(status_code=400, detail="field must be a sensitive target")
+                raise HTTPException(status_code=400, detail="field must be a tracked target")
             try:
-                types = executor.field_types(db, session=session)
+                scope = authorized_departments(who, policy)
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            at = clock.now(db=db, session=session)
+            try:
+                types = executor.field_types(db, at, scope=scope, session=session)
             except executor.QueryError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             value = _update_value(field, new_value, types)
-            at = clock.now(db=db, session=session)
             if at <= clock.DEMO_START:
                 raise HTTPException(status_code=409,
                                     detail="advance the demo clock before changing employee data")
+            changes = {field: value, f"updated_at.{field}": at}
+            if field == "Age":
+                employee = db.employees.find_one(
+                    {"EmployeeNumber": employee_number}, {"AgeBand": 1, "_id": 0},
+                    session=session,
+                )
+                if employee is None:
+                    raise HTTPException(status_code=404, detail="employee not found")
+                low = value // 5 * 5
+                band = f"{low}-{low + 4}"
+                changes["AgeBand"] = band
+                if employee.get("AgeBand") != band:
+                    changes["updated_at.AgeBand"] = at
             result = db.employees.update_one(
                 {"EmployeeNumber": employee_number},
-                {"$set": {field: value, f"updated_at.{field}": at}}, session=session,
+                {"$set": changes}, session=session,
             )
             if result.matched_count != 1:
                 raise HTTPException(status_code=404, detail="employee not found")
@@ -185,6 +215,7 @@ def admin_simulate_update(field: str, new_value: str,
 
 @app.post("/admin/reset")
 def admin_reset(who: Identity = Depends(current_identity)):
+    require_role(who, "hr_head")
     with operation_lock:
         try:
             at = reset_demo(get_db())
@@ -192,4 +223,5 @@ def admin_reset(who: Identity = Depends(current_identity)):
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        SESSIONS.clear()
     return {"ok": True, "now": at.isoformat()}

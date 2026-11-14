@@ -5,21 +5,12 @@ from datetime import datetime, timezone
 import pytest
 
 from app.gate import check, evidence
-from app.schemas import Cell, Release, StructuredQuery
+from app.schemas import Cell, Identity, Release, StructuredQuery
+from app.policy.defaults import POLICY
 
 TARGET = "PerformanceRating"
 NOW = datetime(2026, 11, 14, tzinfo=timezone.utc)
-POLICY = {
-    "k_threshold": 5,
-    "field_labels": {
-        "Department": "quasi_identifier",
-        "JobLevel": "quasi_identifier",
-        TARGET: "sensitive",
-    },
-    "quasi_identifiers": ["Department", "JobLevel"],
-    "roles": {"hr": {"targets": ["*"], "metrics": ["count", "avg"]}},
-    "sensitive_targets": [TARGET],
-}
+HR_HEAD = Identity("test_hr", "hr_head", "hr", "HR Head")
 
 
 def _cell(key, start, values):
@@ -40,7 +31,7 @@ def _release(cell):
 
 def _grouped(cells, group_by, history=()):
     query = StructuredQuery(metric="avg", target=TARGET, group_by=group_by)
-    return check(query, "hr", cells, list(history), {}, POLICY)
+    return check(query, HR_HEAD, cells, list(history), {}, POLICY)
 
 
 @pytest.mark.parametrize("total_first", [False, True], ids=["grouped-first", "total-first"])
@@ -56,16 +47,16 @@ def test_sales_executive_ratings_do_not_compose_with_counts_and_total(total_firs
     counts_query = StructuredQuery(metric="count", group_by=["JobLevel"])
 
     if total_first:
-        total = check(total_query, "hr", [total_cell], [], {}, POLICY)
+        total = check(total_query, HR_HEAD, [total_cell], [], {}, POLICY)
     else:
         grouped = _grouped(cells, ["JobLevel"])
 
-    counts = check(counts_query, "hr", [Cell(c.key, c.ids, c.n, None) for c in cells],
+    counts = check(counts_query, HR_HEAD, [Cell(c.key, c.ids, c.n, None) for c in cells],
                    [], {}, POLICY)
     if total_first:
         grouped = _grouped(cells, ["JobLevel"], [_release(c) for c in total.cells])
     else:
-        total = check(total_query, "hr", [total_cell], [_release(c) for c in grouped.cells],
+        total = check(total_query, HR_HEAD, [total_cell], [_release(c) for c in grouped.cells],
                       {}, POLICY)
 
     assert counts.status == total.status == "allowed"

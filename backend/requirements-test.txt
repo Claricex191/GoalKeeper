@@ -1,0 +1,7 @@
+-r requirements.txt
+# Execute the real query pipelines locally against the complete IBM CSV.
+mongomock==4.3.0
+# Check generated strict tool schemas as JSON Schema in CI.
+jsonschema>=4.10,<5
+# FastAPI route tests use TestClient directly.
+httpx==0.28.1
