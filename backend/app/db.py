@@ -33,6 +33,8 @@ def get_db() -> Database:
     tz_aware=True: dates come back as UTC-aware datetimes, comparable with clock.now()."""
     global _client
     if _client is None:
+        if not settings.mongodb_uri:
+            raise RuntimeError("MONGODB_URI is not set: add it to backend/.env (see README)")
         _client = MongoClient(settings.mongodb_uri, tz_aware=True)
     return _client[settings.mongodb_db]
 

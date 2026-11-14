@@ -103,7 +103,67 @@ def detect_schema_drift(db, dataset: str) -> dict:
     raise NotImplementedError
 
 
-def tool_schema(policy: dict) -> dict:
-    """Build the query_hr JSON schema (column enums, allowed metrics) from a policy,
-    so the LLM only ever sees fields the active policy allows."""
-    raise NotImplementedError
+def _nullable_enum(values: list[str]) -> dict:
+    """One of `values`, or null. (The API rejects `type: [string, null]` with an enum.)"""
+    if not values:
+        return {"type": "null"}
+    return {"anyOf": [{"type": "string", "enum": list(values)}, {"type": "null"}]}
+
+
+def tool_schema(policy: dict, role: str) -> dict:
+    """Build the query_hr input schema from the active policy and the caller's role, so
+    the LLM only ever sees columns and metrics this role may use.
+
+    - filter / group_by columns: the policy's quasi-identifiers
+    - target: the role's targets (or null for a count)
+    - metric: the role's metrics, plus max / min when the role has any target. Those are
+      kept on purpose: the gate refuses them on the record (L1.extreme) and offers
+      T4_extreme_to_avg, instead of the LLM silently answering something else.
+    The gate re-checks everything, so this narrows the LLM; it is not the defence.
+
+    Strict-tool compatible: every object has additionalProperties false and lists all
+    its properties as required (optional ones are nullable); no numeric or length
+    constraints (unsupported in strict mode).
+    """
+    from app.gate.rules import role_targets   # local import: gate imports nothing from here
+
+    perms = policy["roles"].get(role) or {"targets": [], "metrics": []}
+    targets = sorted(role_targets(perms, policy))
+    metrics = [m for m in ("count", "sum", "avg") if m in perms["metrics"]]
+    if targets:
+        metrics += ["max", "min"]
+    quasi = list(policy["quasi_identifiers"])
+    scalar = {"type": ["string", "number"]}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["filters", "group_by", "metric", "target", "transform"],
+        "properties": {
+            "filters": {
+                "type": "array",
+                "description": "Conditions on who is included; all must hold (AND).",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["col", "op", "val"],
+                    "properties": {
+                        "col": {"type": "string", "enum": quasi},
+                        "op": {"type": "string",
+                               "enum": ["=", "!=", "<", "<=", ">", ">=", "in"]},
+                        "val": {"anyOf": [scalar, {"type": "array", "items": scalar}],
+                                "description": "A list only with op 'in'."},
+                    },
+                },
+            },
+            "group_by": {"type": "array", "items": {"type": "string", "enum": quasi},
+                         "description": "At most 2 columns; [] for a single overall number."},
+            "metric": {"type": "string", "enum": metrics},
+            "target": {**_nullable_enum(targets),
+                       "description": "The field to aggregate; null only for count."},
+            "transform": {
+                **_nullable_enum(["T1_merge_groups", "T2_drop_filter", "T3_widen_scope",
+                                  "T4_extreme_to_avg"]),
+                "description": "null on a first attempt. After a block, the transform you "
+                               "applied (must be one the block allowed)."},
+        },
+    }
