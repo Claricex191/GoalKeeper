@@ -80,10 +80,25 @@ def policy_activate(version: int, dataset: str, approved_by: str):
     raise NotImplementedError
 
 
+DEMO_PROJECT = "comp-review-2026"      # the project the frontend uses
+
+
+def _clock_view() -> dict:
+    return {"now": clock.now().isoformat(), "offset_days": clock.offset_days()}
+
+
+@app.get("/admin/clock")
+def admin_clock_get() -> dict:
+    return _clock_view()
+
+
 @app.post("/admin/clock")
-def admin_clock(days: float):
-    # TODO: clock.advance(days)
-    raise NotImplementedError
+def admin_clock(days: float) -> dict:
+    try:
+        clock.advance(days)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _clock_view()
 
 
 @app.post("/admin/simulate-update")
@@ -100,10 +115,36 @@ def admin_simulate_update(employee_number: int, field: str, new_value: float | i
     In a real deployment this endpoint does not exist: an Atlas change stream or
     Atlas Trigger sets updated_at.<field> whenever a sensitive field is modified.
     """
-    raise NotImplementedError
+    db = get_db()
+    policy = store.load_active(db, "ibm_hr")
+    if field not in policy.get("tracked_targets", policy.get("sensitive_targets", [])):
+        raise HTTPException(400, f"{field} is not a tracked sensitive field")
+    now = clock.now()
+    res = db.employees.update_one({"EmployeeNumber": employee_number},
+                                  {"$set": {field: new_value, f"updated_at.{field}": now}})
+    if res.matched_count != 1:
+        raise HTTPException(404, f"no employee {employee_number}")
+    ledger.append(db, {"kind": "data_update", "time": now, "user": "demo-admin",
+                       "employee_number": employee_number, "field": field})
+    return {"ok": True}
 
 
 @app.post("/admin/reset")
-def admin_reset():
-    # TODO: clear releases / precedents / ledger / approvals, then warm up
-    raise NotImplementedError
+def admin_reset(project: str = DEMO_PROJECT) -> dict:
+    """DEMO ONLY (a real deployment has no reset): start a rehearsal from a clean state.
+
+    Clock back to Monday; this project's releases, review requests, precedents and
+    gate decisions removed (L5 counts from the ledger, so a rehearsal would otherwise
+    start already locked); in-process chat sessions cleared. Policy changes and data
+    updates stay in the ledger. Employee data is not restored: re-run
+    scripts/load_data.py after a simulate-update.
+    """
+    from app.agent import loop
+    db = get_db()
+    removed = {c: db[c].delete_many({"project": project}).deleted_count
+               for c in ("releases", "approvals", "precedents")}
+    removed["ledger"] = db.ledger.delete_many({"project": project,
+                                               "kind": "gate_decision"}).deleted_count
+    loop.SESSIONS.clear()
+    clock.reset()
+    return {"ok": True, **_clock_view(), "removed": removed}

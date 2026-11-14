@@ -120,4 +120,7 @@ POLICY = {
         "retention_days": 365,
         "retention_by_target": {"MonthlyIncome": 730, "PerformanceRating": 730},
     },
+    # L5.probing: after a user's first refusal on a field, at most this many further
+    # questions on it; the next one goes to the HR head for review (agent.tools._probing).
+    "probing": {"max_attempts": 3, "window_days": 7},
 }

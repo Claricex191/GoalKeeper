@@ -161,7 +161,9 @@ def test_l5_probing_goes_to_reviewer(db, project):
     from app.review import approvals
 
     def ask(turn, q=SALES_MGR, who=MGR1, memory=True):
-        return handle_query_hr(ctx(db, project, who, MON, memory, turn=turn), q)["trace"]
+        c = ctx(db, project, who, MON, memory, turn=turn)
+        c["policy"] = {**c["policy"], "probing": {"max_attempts": 5, "window_days": 7}}
+        return handle_query_hr(c, q)["trace"]
 
     # turn 0: first block (max is refused, L1.extreme); the agent's rewrite in the
     # same message is not a new question
