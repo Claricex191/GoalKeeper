@@ -427,10 +427,10 @@ GATE_SCENARIOS = [
     {"name": "Sales Executives' ratings: all 14 at level 4 are rated 3 (L2.homogeneous)",
      "not_hired": [],
      "steps": [
-         ask("hr_1", "people", "2026-11-09", "partial",
+         ask("hr_1", "people", "2026-11-09", "blocked",
              [where("JobRole", "Sales Executive")], group_by=["JobLevel"],
              target="PerformanceRating", role="hr", expect_rule="L2.homogeneous",
-             expect_hidden=[{"JobLevel": 4}]),
+             expect_hidden=[{"JobLevel": 4}, {"JobLevel": 2}, {"JobLevel": 3}]),
      ]},
 ]
 

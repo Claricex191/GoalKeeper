@@ -8,7 +8,13 @@ Inputs
   only in old releases.
 Only target queries reach L4. Counts reveal no sensitive value and are never recorded.
 
-Two complementary checks; pairwise first (cheap, easy to explain):
+Before comparing answers, reject connected histories whose value versions cannot be
+determined from last-modified timestamps. Equal update/release timestamps do not order
+the operations. Multiple observations before the latest update may span earlier updates.
+These cases must not be merged into one "old" version. Disconnected histories are safe
+to ignore for this ambiguity check because no population equation links them to a new cell.
+
+Two complementary checks follow; pairwise first (cheap, easy to explain):
 - pairwise (L4.pairwise): per (new cell, old release) on the same target, count the people
   whose contribution CHANGED between the two answers:
     A = membership changes: S_new Δ S_old (joined or left the population)
@@ -37,8 +43,9 @@ person in or out of a population, which A already catches.
 Known limitations
 - Three or more releases can reveal the TOTAL of a 2..k-1 person group (or the total of
   their changes) while every pair passes and no single value is solvable.
-- updated_at keeps only the LAST change per field, so each employee has at most two
-  value versions: before and after that change.
+- updated_at keeps only the LAST change per field. Ambiguous histories are blocked even
+  when a complete version log might establish safety. The timestamps and populations
+  must describe the same data snapshot as the released answer.
 """
 
 import numpy as np
@@ -53,6 +60,49 @@ def changed_after(updated_at: UpdatedAt, i: int, target: str, t) -> bool:
     """Strictly later; a missing entry means "not modified since load"."""
     ts = updated_at.get(i, {}).get(target)
     return ts is not None and ts > t
+
+
+def _history_ambiguity(cells: list[Cell], history: list[Release], target: str | None,
+                       updated_at: UpdatedAt) -> dict | None:
+    """Fail closed when the connected equations need unavailable historical versions.
+
+    One strictly pre-update observation per person has one well-defined old version.
+    Two may straddle an earlier update, even if their release timestamps are identical.
+    An observation at the update timestamp could be on either side of that update.
+    Only employee sets are used for connectivity, conservatively including old versions.
+    """
+    if target is None or not cells:
+        return None
+    old = [r for r in history if r.target == target]
+    by_employee: dict[int, list[int]] = {}
+    for index, release in enumerate(old):
+        for employee in release.ids:
+            by_employee.setdefault(employee, []).append(index)
+    frontier = {employee for cell in cells for employee in cell.ids}
+    seen_people = set(frontier)
+    connected: set[int] = set()
+    while frontier:
+        employee = frontier.pop()
+        for index in by_employee.get(employee, []):
+            if index in connected:
+                continue
+            connected.add(index)
+            frontier.update(old[index].ids - seen_people)
+            seen_people.update(old[index].ids)
+
+    pre_update: set[int] = set()
+    for index in sorted(connected):
+        release = old[index]
+        for employee in release.ids:
+            updated = updated_at.get(employee, {}).get(target)
+            if updated is None or updated < release.created_at:
+                continue
+            if updated == release.created_at:
+                return {"rule": "L4.history", "reason": "update_release_timestamp_tie"}
+            if employee in pre_update:
+                return {"rule": "L4.history", "reason": "multiple_pre_update_observations"}
+            pre_update.add(employee)
+    return None
 
 
 def describe(old: Release) -> dict:
@@ -144,7 +194,14 @@ def _matrix(rows: list[set]) -> tuple[dict, np.ndarray]:
 
 def linear(cells: list[Cell], history: list[Release], target: str | None,
            updated_at: UpdatedAt) -> dict | None:
-    """Block when the new cells make some value or change newly solvable. Evidence:
+    """Check historical versions, then test for newly solvable values or changes."""
+    return (_history_ambiguity(cells, history, target, updated_at)
+            or _linear(cells, history, target, updated_at))
+
+
+def _linear(cells: list[Cell], history: list[Release], target: str | None,
+            updated_at: UpdatedAt) -> dict | None:
+    """On unambiguous histories, block newly solvable values or changes. Evidence:
       {"rule": "L4.linear", "n_people", "n_value_changed",
        "terms": [{"release": describe(old), "coefficient"} | {"this_answer": cell.key,
                  "coefficient"}]}   (the combination that isolates one of them)"""
@@ -169,6 +226,7 @@ def linear(cells: list[Cell], history: list[Release], target: str | None,
 
 def check_history(cells: list[Cell], history: list[Release], target: str | None,
                   updated_at: UpdatedAt, k: int) -> dict | None:
-    """pairwise (A + B) first (cheap, explainable), then linear. Return evidence or None."""
-    return (pairwise(cells, history, target, updated_at, k)
-            or linear(cells, history, target, updated_at))
+    """Check version ambiguity before pairwise (A + B) and linear disclosure checks."""
+    return (_history_ambiguity(cells, history, target, updated_at)
+            or pairwise(cells, history, target, updated_at, k)
+            or _linear(cells, history, target, updated_at))

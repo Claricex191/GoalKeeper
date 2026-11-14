@@ -36,7 +36,7 @@ REWRITES: list[Transform] = ["T1_merge_groups", "T2_drop_filter", "T3_widen_scop
 TRANSFORMS: dict[str, list[Transform]] = {
     "L1.extreme": ["T4_extreme_to_avg"],
     "L2.min_n": REWRITES, "L2.homogeneous": REWRITES, "L3.secondary": REWRITES,
-    "L4.pairwise": REWRITES, "L4.linear": REWRITES,
+    "L4.pairwise": REWRITES, "L4.linear": REWRITES, "L4.history": REWRITES,
 }
 HIDING_ORDER = ["L2.min_n", "L2.homogeneous", "L3.secondary"]
 
@@ -60,7 +60,8 @@ def check(query: StructuredQuery, role: str, cells: list[Cell],
     L3 rules.complementary       hide more cells until the hidden ones cannot be
                                  recovered by subtraction from a total
     L4 cross_query.check_history block the whole query, with evidence; target queries
-                                 only. Pairwise counts membership changes (A) and value
+                                 only. Ambiguous historical value versions block before
+                                 inference. Pairwise counts membership changes (A) and value
                                  changes since each old release (B); linear catches
                                  combinations of three or more answers.
     Hidden cells never reach L4 and are never recorded.

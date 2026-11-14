@@ -13,8 +13,8 @@ Rule ids (used in Decision.rule, suppressed[].reason, the ledger and the tests):
                    whatever the group size
   L2.min_n         cell with fewer than k people (counts too)
   L2.homogeneous   everyone in the cell has the same target value (vmin == vmax)
-  L3.secondary     extra cell hidden so the hidden cells cannot be recovered by
-                   subtracting the shown cells from a total asked for later
+  L3.secondary     extra cell hidden so subtraction from a total does not isolate
+                   one protected group or a group with fewer than k people
 """
 from app.schemas import Cell, StructuredQuery
 
@@ -103,20 +103,25 @@ def _homogeneous(cell: Cell) -> bool:
 
 def complementary(kept: list[Cell], suppressed: list[dict], query: StructuredQuery,
                   k: int) -> tuple[list[Cell], list[dict]]:
-    """L3. Hidden cells must not be recoverable by subtraction (total − shown = hidden).
+    """L3. Protect hidden cells against subtraction from totals of the same population.
 
-    The executor never returns totals, but a user can ask for one later by dropping the
-    group_by, and L4 compares one old release at a time, so it would not notice that the
-    total minus several shown cells isolates the hidden ones.
+    Any homogeneous remainder can reveal every value in it, even when its count is
+    above k. Hiding one other group can still leave only one possible value for the
+    homogeneous group when the target has a known, narrow range. Row and column
+    totals add constraints for two-dimensional tables. When L2 flags a homogeneous
+    cell, suppress the grouped answer so it adds no aggregates.
 
-    Rule: in every margin a later query could total (the whole answer and, with a
-    2-column group_by, each row and each column) the hidden cells together must cover
-    0 or >= k people. Otherwise also hide the smallest shown cell of that margin (reason
-    L3.secondary) and repeat until nothing changes. Rows and columns are checked before
-    the whole answer, so the extra cell comes from the margin that needs it.
+    For small cells, each margin (whole answer and, for two dimensions, rows and
+    columns) must hide 0 or >= k people. Add the smallest visible cell in an unsafe
+    margin and repeat. These rules cover subtraction using this answer's cells and
+    totals. Other overlapping queries and bounds on possible values can add information.
     """
     kept, suppressed = list(kept), list(suppressed)
     dims = list(query.group_by)
+    if any(s["reason"] == "L2.homogeneous" for s in suppressed):
+        suppressed.extend({"key": cell.key, "reason": "L3.secondary", "n": cell.n}
+                          for cell in kept)
+        return [], suppressed
     margins = ([[d] for d in dims] + [[]]) if len(dims) == 2 else [[]]
     while True:
         extra = _secondary_candidate(kept, suppressed, margins, k)

@@ -38,10 +38,11 @@ GATE_ERROR = "This request could not be checked safely, so nothing was released.
 
 
 def public_rule(decision: Decision) -> str | None:
-    """L2 / L3 collapse to "L2"; L1 and L4 ids depend on the question or on the fact of a
-    block only, so they are shown as is."""
+    """Hide suppression reasons and historical timestamp ambiguity in public rule ids."""
     if decision.rule in HIDING_RULES:
         return "L2"
+    if decision.rule == "L4.history":
+        return "L4"
     return decision.rule
 
 
@@ -74,6 +75,8 @@ def render_public(decision: Decision, viewer: str | None = None) -> str | None:
     rule, ev = decision.rule, decision.evidence or {}
     if rule is None:
         return None
+    if rule == "L4.history":
+        return "This answer cannot be safely released alongside earlier answers."
     if rule in HIDING_RULES:
         keys = [s["key"] for s in decision.suppressed]
         if decision.status == "partial":
@@ -102,6 +105,8 @@ def render_audit(decision: Decision) -> str | None:
     rule, ev = decision.rule, decision.evidence or {}
     if rule is None:
         return None
+    if rule == "L4.history":
+        return f"L4.history: historical value versions are ambiguous ({ev['reason']})."
     if rule in HIDING_RULES:
         return f"{rule}: hidden " + "; ".join(
             f"{_key(s['key'])}: {s['reason']} (n={s['n']})" for s in decision.suppressed)
