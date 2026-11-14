@@ -11,17 +11,19 @@ conversation. Must be complete and lossless. Governance rules:
 from datetime import datetime, timedelta
 
 from app.config import settings
-from app.schemas import Decision, Release, StructuredQuery
+from app.schemas import Decision, Identity, Release, StructuredQuery
 
 
-def load_history(db, user: str, project: str, target: str, now: datetime) -> list[Release]:
-    """ALL unexpired releases for this target within the configured scope."""
+def load_history(db, who: Identity, project: str, target: str, now: datetime) -> list[Release]:
+    """ALL unexpired releases for this target within the configured scope:
+    user → {user: who.user}, team → {team: who.team}, org → no user/team filter."""
     raise NotImplementedError
 
 
 def record_then_release(db, decision: Decision, query: StructuredQuery,
-                        user: str, project: str, now: datetime) -> None:
-    """Write one release per returned cell inside a transaction.
+                        who: Identity, project: str, session_id: str, now: datetime) -> None:
+    """Write one release per returned cell inside a transaction, stamped with
+    who.user and who.team.
     Only after the write succeeds may the caller return the cells (fail closed).
     Each record also stores `cell_key` and `label`: a deterministic description built
     from the query's filters, the cell key, metric and target (never by the LLM, never

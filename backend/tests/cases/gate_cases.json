@@ -51,7 +51,7 @@
     "not_hired": [],
     "steps": [
       {
-        "user": "mgr_1", "team": "hr", "date": "2026-11-09",
+        "user": "mgr_4", "team": "hr", "date": "2026-11-09",
         "note": "11 people, avg 18088.64",
         "query": {"filters": [{"col": "Department", "op": "=", "val": "Human Resources"},
                               {"col": "JobRole", "op": "=", "val": "Manager"}],
@@ -61,7 +61,7 @@
       {"event": "update", "employee": 1408, "field": "MonthlyIncome",
        "new_value": 18500, "date": "2026-11-11"},
       {
-        "user": "mgr_1", "team": "hr", "date": "2026-11-12",
+        "user": "mgr_4", "team": "hr", "date": "2026-11-12",
         "note": "same 11 people, avg 18243.27; without memory 11*(18243.27-18088.64) = 1701 raise",
         "query": {"filters": [{"col": "Department", "op": "=", "val": "Human Resources"},
                               {"col": "JobRole", "op": "=", "val": "Manager"}],

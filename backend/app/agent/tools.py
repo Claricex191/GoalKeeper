@@ -6,7 +6,7 @@ query_hr(query: StructuredQuery)
   3. history = memory.releases.load_history(...)   ([] when memory is off)
      updated_at = employees.updated_at[query.target] for every id in cells
                   ({} when memory is off or target is None)
-  4. decision = gate.check(query, role, cells, history, updated_at, policy)
+  4. decision = gate.check(query, ctx["who"].role, cells, history, updated_at, policy)
   5. ledger.append(...) always (kind "gate_decision", memory_on = ctx memory flag)
   6. allowed/partial → memory on:  memory.releases.record_then_release(...) then return cells
                        memory off: return cells WITHOUT recording a release
