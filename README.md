@@ -85,14 +85,41 @@ pip install -r requirements.txt
 cp .env.example .env                                 # fill in keys
 python scripts/load_data.py
 python scripts/seed_policies.py --approved-by "<your name>"
+python scripts/warmup.py                            # clean Monday, once per reset
 uvicorn app.main:app --reload
 
 cd ../frontend
 npm install && npm run dev
 ```
 
-Atlas Vector Search index on `precedents.embedding` is created in the Atlas UI
+The Atlas Vector Search index on `precedents.embedding` is ensured at startup
 (definition in `app/db.py`).
+
+### Demo controls and warmup
+
+The admin controls and `scripts/warmup.py` use the executor, privacy gate and transactional
+release writer directly, without an LLM. Warmup refuses existing project history,
+modified employees or a clock beyond Monday. Use `POST /admin/reset` to prepare a new
+run: it restores employees from the local CSV, clears demo memory and review requests,
+and seeds the Sales and HR manager averages for Monday in one transaction. The audit
+ledger remains intact. The CSV must already exist on the API host; reset never downloads
+data or drops the employees collection. MongoDB must support transactions (Atlas or a
+replica set).
+
+For both scenarios in one run, select **`hr_1` (HR Head)**: reset, advance **2 days**, update employee **1408**'s
+`MonthlyIncome` to **18500**, then advance **1 day**. Ask the Sales Manager question as
+`mgr_1`, and switch to **`mgr_4`** for the HR Manager question so each reads the correct
+team's Monday history. Demo changes and policy management require **`hr_head`**;
+all authenticated users can read the clock. See [frontend/API.md](frontend/API.md) for errors and
+reset semantics.
+
+Reset keeps the audit ledger and starts a new L5 counting interval, so previous runs
+do not immediately trigger a new review. Successful API resets also clear this server's
+chat context. Query roles, category grants and department scopes follow the v2 policy;
+an old active policy must be upgraded with `scripts/seed_policies.py` before the demo.
+
+The real `/chat`, agent tools, reviewer routes and semantic precedents are connected.
+`npm run dev:mock` provides the scripted two-scenario UI rehearsal without external services.
 
 ### Your own `.env` (keys and connection string)
 

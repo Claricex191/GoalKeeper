@@ -91,14 +91,19 @@ def load_history(db, who: Identity, project: str, targets: list[str], now: datet
 
 def record_then_release(db, decision: Decision, query: StructuredQuery,
                         who: Identity, project: str, session_id: str, now: datetime,
-                        policy: dict, ledger_entry: dict) -> int:
+                        policy: dict, ledger_entry: dict, *, session=None) -> int:
     """Write one release per (returned cell × release target) AND the ledger entry in
     one transaction, stamped with who.user and who.team. Returns the number of releases.
 
     Only after this returns may the caller return the cells (fail closed): any error
     (including the releases validator rejecting n < 5) raises and rolls back both
     the releases and the ledger entry. Suppressed cells are never recorded.
-    Each record stores `cell_key` and `label` (see make_label) for evidence.render."""
+    Each record stores `cell_key` and `label` (see make_label) for evidence.render.
+    If `session` is supplied, it must already be in a transaction; the caller must
+    commit that transaction before returning any cells. This lets reset/warmup
+    atomically seed both teams alongside the restored data."""
+    if session is not None and not session.in_transaction:
+        raise ValueError("record_then_release requires an active transaction")
     if (not isinstance(query, StructuredQuery) or decision.mode != "aggre_stats"
             or decision.records or decision.status not in ("allowed", "partial")):
         raise ValueError("only approved aggregate decisions can enter the release ledger")
@@ -121,6 +126,9 @@ def record_then_release(db, decision: Decision, query: StructuredQuery,
             db.releases.insert_many(docs, session=session)
         ledger.append(db, ledger_entry, session=session)
 
-    with db.client.start_session() as session:
-        session.with_transaction(txn)
+    if session is not None:
+        txn(session)
+    else:
+        with db.client.start_session() as own_session:
+            own_session.with_transaction(txn)
     return len(docs)

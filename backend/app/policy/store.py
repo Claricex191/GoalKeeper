@@ -31,13 +31,16 @@ def ensure_policy_indexes(db) -> None:
                              partialFilterExpression={"status": "active"})
 
 
-def load_active(db, dataset: str) -> dict:
-    """Return the active policy for this dataset (cached; refresh on activation)."""
-    if dataset not in _active_cache:
-        doc = db.policies.find_one({"dataset": dataset, "status": "active"})
+def load_active(db, dataset: str, *, session=None) -> dict:
+    """Return the active policy; transactions read their own uncached snapshot."""
+    if session is not None or dataset not in _active_cache:
+        options = {"session": session} if session is not None else {}
+        doc = db.policies.find_one({"dataset": dataset, "status": "active"}, **options)
         if doc is None:
             raise LookupError(f"no active policy for {dataset!r}; run scripts/seed_policies.py")
         _require_current_schema(doc)
+        if session is not None:
+            return doc
         _active_cache[dataset] = doc
     _require_current_schema(_active_cache[dataset])
     return _active_cache[dataset]

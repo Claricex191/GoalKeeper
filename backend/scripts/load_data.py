@@ -22,22 +22,17 @@ Run from backend/:
 """
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from pymongo import ASCENDING
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `app` importable
 
 from app.clock import DEMO_START, NEW_HIRE_START  # noqa: E402
+from app.demo.baseline import CSV_PATH, NEW_HIRE_ID, build_documents, check  # noqa: E402
 
-CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "ibm_hr.csv"
 OPENML_ID = 43896
-EXPECTED_SHAPE = (1470, 35)
-NEW_HIRE_ID = 473
-LONG_AGO = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
 def read_dataset() -> pd.DataFrame:
@@ -53,41 +48,6 @@ def read_dataset() -> pd.DataFrame:
     # Always read the CSV, so dtypes are identical whether cached or just downloaded.
     print(f"reading {CSV_PATH}")
     return pd.read_csv(CSV_PATH)
-
-
-def check(df: pd.DataFrame) -> None:
-    assert df.shape == EXPECTED_SHAPE, f"expected {EXPECTED_SHAPE}, got {df.shape}"
-    assert "EmployeeNumber" in df.columns, "EmployeeNumber missing"
-    assert df["EmployeeNumber"].is_unique, "EmployeeNumber not unique"
-    hire = df[df["EmployeeNumber"] == NEW_HIRE_ID]
-    assert len(hire) == 1, f"employee {NEW_HIRE_ID} missing"
-    h = hire.iloc[0]
-    assert (h["Department"], h["JobRole"], h["YearsAtCompany"]) == ("Sales", "Manager", 0), \
-        f"employee {NEW_HIRE_ID} is not the Sales / Manager new hire the demo expects"
-
-
-def to_python(v):
-    """numpy / pandas scalars → plain Python types that pymongo can encode."""
-    if isinstance(v, np.integer):
-        return int(v)
-    if isinstance(v, np.floating):
-        return float(v)
-    if isinstance(v, np.bool_):
-        return bool(v)
-    return v
-
-
-def build_documents(df: pd.DataFrame) -> list[dict]:
-    docs = []
-    for row in df.to_dict("records"):
-        doc = {k: to_python(v) for k, v in row.items()}
-        low = doc["Age"] // 5 * 5
-        doc["AgeBand"] = f"{low}-{low + 4}"
-        doc["active"] = True
-        doc["start_date"] = NEW_HIRE_START if doc["EmployeeNumber"] == NEW_HIRE_ID else LONG_AGO
-        doc["updated_at"] = {}
-        docs.append(doc)
-    return docs
 
 
 def summarize(docs: list[dict]) -> None:
