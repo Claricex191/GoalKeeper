@@ -2,7 +2,7 @@
 
 The client sends only a user id (header `X-Demo-User`); role and team always come from
 this server-side table, so a client cannot claim a role or team it does not have.
-Memory scope (settings.memory_scope = team) and L1 role permissions both depend on it.
+Memory scope (policy.memory.scope = team) and L1 role permissions both depend on it.
 
 The same ids and teams are used in tests/cases/gate_cases.json
 (tests/test_users.py checks that they agree).

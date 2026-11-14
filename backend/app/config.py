@@ -15,9 +15,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     voyage_api_key: str = ""
-    k_threshold: int = 5
-    median_threshold: int = 10
-    memory_scope: str = "team"   # user | team | org
+    # Thresholds, memory scope and retention are NOT settings: they come from the
+    # active policy (policies collection), which is versioned and human-approved.
 
 
 settings = Settings()

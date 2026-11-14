@@ -10,13 +10,14 @@ Routes
 - POST /admin/reset       wipe memory and re-run scripts/warmup.py
 """
 
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from fastapi import Depends, FastAPI, HTTPException
 
 from app import clock
 from app.agent.loop import run_agent
-from app.db import get_db
+from app.db import ensure_indexes, get_db
 from app.memory import ledger, precedents, releases
 from app.policy import profiler, store
 from app.review import approvals
@@ -24,7 +25,13 @@ from app.schemas import ChatRequest, ChatResponse, Identity
 from app.users import DEMO_USERS, current_identity, require_role
 
 
-app = FastAPI(title="Memory-Governed Privacy Agent")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ensure_indexes(get_db())          # validators + indexes; idempotent
+    yield
+
+
+app = FastAPI(title="Memory-Governed Privacy Agent", lifespan=lifespan)
 
 
 @app.get("/demo/users")

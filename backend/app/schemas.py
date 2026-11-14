@@ -82,7 +82,7 @@ Role = Literal["manager", "hr", "employee"]
 class Identity:
     user: str
     role: Role
-    team: str                 # memory scope boundary when settings.memory_scope == "team"
+    team: str                 # memory scope boundary when policy.memory.scope == "team"
     display_name: str
 
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `app` importable
 
-from app.db import get_db  # noqa: E402
+from app.db import ensure_indexes, get_db  # noqa: E402
 from app.policy import store  # noqa: E402
 
 DATASET = "ibm_hr"
@@ -68,7 +68,14 @@ POLICY = {
         "hr":       {"targets": ["*"], "metrics": ["count", "sum", "avg"]},
         "employee": {"targets": [], "metrics": ["count"]},
     },
-    "memory": {"scope": "team", "retention_days": 365},
+    # Retention = how long a release still helps someone piece together a person.
+    # Pay stays linkable for years; survey answers roughly one survey cycle.
+    # PLACEHOLDER values: Suey + Qi Jia decide.
+    "memory": {
+        "scope": "team",                    # user | team | org
+        "retention_days": 365,              # default for targets not listed below
+        "retention_by_target": {"MonthlyIncome": 730, "PerformanceRating": 730},
+    },
 }
 
 
@@ -90,6 +97,7 @@ if __name__ == "__main__":
 
     db = get_db()
     check_labels_cover_data(db)
+    ensure_indexes(db)
     store.ensure_policy_indexes(db)
     version = store.create_draft(db, DATASET, POLICY, drafted_by="manual")
     store.activate(db, DATASET, version, approved_by=args.approved_by)
