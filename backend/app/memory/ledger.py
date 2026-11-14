@@ -11,6 +11,13 @@ Viewed in the Atlas UI during the demo.
 
 from app import clock
 
+KINDS = ("gate_decision", "data_update", "policy_change")
 
-def append(db, entry: dict) -> None:
-    raise NotImplementedError
+
+def append(db, entry: dict, session=None) -> None:
+    """Insert one entry; `time` defaults to clock.now(). Pass `session` to write
+    inside a caller's transaction."""
+    if entry.get("kind") not in KINDS:
+        raise ValueError(f"ledger entry needs kind in {KINDS}, got {entry.get('kind')!r}")
+    doc = {"time": clock.now(), **entry}
+    db.ledger.insert_one(doc, session=session)

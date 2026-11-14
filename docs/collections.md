@@ -208,3 +208,15 @@ on `ledger`.
 
 Validator (required): `kind` (`review` / `kill_switch`); for reviews also `status`
 (`pending` / `approved` / `rejected`). The backend watches this collection with a change stream.
+
+---
+
+## meta — demo clock
+
+One document: `{"_id": "clock", "offset_days": 3.0}`. `app/clock.py` reads it so the API
+server and `scripts/warmup.py` (separate processes) agree on the simulated "now"
+(`DEMO_START` = Mon 2026-11-09 09:00 UTC + offset). Reset to 0 by `/admin/reset`.
+
+`policies` indexes: `{dataset: 1, version: 1}` unique, and `{dataset: 1}` unique with
+`partialFilterExpression: {status: "active"}` so the database itself allows only one active
+version per dataset (created by `store.ensure_policy_indexes`).

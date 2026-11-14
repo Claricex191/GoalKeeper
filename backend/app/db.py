@@ -30,10 +30,11 @@ _client: MongoClient | None = None
 
 
 def get_db() -> Database:
-    """Return the pymongo Database for settings.mongodb_db (one shared client)."""
+    """Return the pymongo Database for settings.mongodb_db (one shared client).
+    tz_aware=True: dates come back as UTC-aware datetimes, comparable with clock.now()."""
     global _client
     if _client is None:
-        _client = MongoClient(settings.mongodb_uri)
+        _client = MongoClient(settings.mongodb_uri, tz_aware=True)
     return _client[settings.mongodb_db]
 
 

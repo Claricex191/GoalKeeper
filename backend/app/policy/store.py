@@ -5,25 +5,89 @@ Both scripts/seed_policies.py (manual) and policy/profiler.py (agent-drafted)
 only ever create DRAFTS; a human activates them.
 """
 
+from pymongo import ASCENDING, DESCENDING
+
 from app import clock
 from app.memory import ledger
+
+# Keys that only the lifecycle functions below may set.
+_LIFECYCLE_KEYS = {"_id", "dataset", "version", "status", "drafted_by", "approved_by",
+                   "created_at", "activated_at", "retired_at"}
+
+_active_cache: dict[str, dict] = {}
+
+
+def ensure_policy_indexes(db) -> None:
+    """At most one active version per dataset, enforced by the database itself."""
+    db.policies.create_index([("dataset", ASCENDING), ("version", ASCENDING)], unique=True)
+    db.policies.create_index([("dataset", ASCENDING)], unique=True,
+                             name="one_active_per_dataset",
+                             partialFilterExpression={"status": "active"})
 
 
 def load_active(db, dataset: str) -> dict:
     """Return the active policy for this dataset (cached; refresh on activation)."""
-    raise NotImplementedError
+    if dataset not in _active_cache:
+        doc = db.policies.find_one({"dataset": dataset, "status": "active"})
+        if doc is None:
+            raise LookupError(f"no active policy for {dataset!r}; run scripts/seed_policies.py")
+        _active_cache[dataset] = doc
+    return _active_cache[dataset]
+
+
+def clear_cache() -> None:
+    _active_cache.clear()
 
 
 def create_draft(db, dataset: str, policy: dict, drafted_by: str) -> int:
     """Insert a new version with status "draft"; return its version number."""
-    raise NotImplementedError
+    last = db.policies.find_one({"dataset": dataset}, sort=[("version", DESCENDING)])
+    version = last["version"] + 1 if last else 1
+    body = {k: v for k, v in policy.items() if k not in _LIFECYCLE_KEYS}
+    db.policies.insert_one({
+        **body,
+        "_id": f"{dataset}_v{version}",
+        "dataset": dataset,
+        "version": version,
+        "status": "draft",
+        "drafted_by": drafted_by,
+        "created_at": clock.now(),
+    })
+    return version
 
 
 def activate(db, dataset: str, version: int, approved_by: str) -> None:
     """Human approval: retire the current active version, activate this one,
     and append {kind: "policy_change", dataset, from_version, to_version, user} to the
-    ledger. Never called by the agent."""
-    raise NotImplementedError
+    ledger. Never called by the agent.
+    A retired version may be re-activated (rollback). All writes in one transaction."""
+    if not approved_by:
+        raise ValueError("activation needs a human approver")
+    target = db.policies.find_one({"dataset": dataset, "version": version})
+    if target is None:
+        raise LookupError(f"{dataset!r} has no version {version}")
+    if target["status"] == "active":
+        return
+    current = db.policies.find_one({"dataset": dataset, "status": "active"})
+    at = clock.now()
+
+    def txn(session):
+        if current:
+            db.policies.update_one({"_id": current["_id"]},
+                                   {"$set": {"status": "retired", "retired_at": at}},
+                                   session=session)
+        db.policies.update_one({"_id": target["_id"]},
+                               {"$set": {"status": "active", "approved_by": approved_by,
+                                         "activated_at": at}},
+                               session=session)
+        ledger.append(db, {"kind": "policy_change", "time": at, "user": approved_by,
+                           "dataset": dataset,
+                           "from_version": current["version"] if current else None,
+                           "to_version": version}, session=session)
+
+    with db.client.start_session() as session:
+        session.with_transaction(txn)
+    _active_cache.pop(dataset, None)
 
 
 def detect_schema_drift(db, dataset: str) -> dict:
