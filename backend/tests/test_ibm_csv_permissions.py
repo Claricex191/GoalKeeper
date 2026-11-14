@@ -19,7 +19,7 @@ from app.query import executor
 from app.query.executor import QueryError, run_individual_query, run_query
 from app.schemas import Identity, IndividualQuery, Release, StructuredQuery
 
-CSV = Path(__file__).resolve().parents[1] / "data" / "ibm_hr.csv"
+from app.demo.baseline import CSV_PATH as CSV   # data/goalkeeper_hr_2026.csv
 
 # Product specification, in Other Basic / Sensitive Basic / Salary /
 # Measurement Report / Performance Rating order. I and A remain independent.
@@ -45,7 +45,7 @@ def identity(role):
 @pytest.fixture(scope="module")
 def rows():
     if not CSV.exists():
-        pytest.skip("Full IBM CSV required: backend/data/ibm_hr.csv")
+        pytest.skip(f"Full HR CSV required: {CSV}")
 
     def scalar(text):
         try:
@@ -55,14 +55,18 @@ def rows():
 
     with CSV.open(encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
-        assert len(reader.fieldnames) == 35
+        assert len(reader.fieldnames) == 37
         data = [{key: scalar(value) for key, value in row.items()} for row in reader]
     assert len(data) == 1470
     assert len({row["EmployeeNumber"] for row in data}) == 1470
     assert {department: sum(r["Department"] == department for r in data)
             for department in {r["Department"] for r in data}} == {
-        "Sales": 446, "Research & Development": 961, "Human Resources": 63}
-    return data
+        "Sales": 447, "Research & Development": 960, "Human Resources": 63}
+    # The independent reference sees what the executor sees: people who left
+    # (active == "dimission") are excluded from every query.
+    active = [r for r in data if r["active"] == "on"]
+    assert len(active) == 1228
+    return active
 
 
 @pytest.fixture(scope="module")
@@ -74,7 +78,7 @@ def db(rows):
     frame = pd.read_csv(CSV)
     check(frame)
     documents = build_documents(frame)
-    assert len(documents) == len(rows)
+    assert sum(d["active"] for d in documents) == len(rows)   # rows = active only
     client = mongomock.MongoClient(tz_aware=True)
     database = client["ibm_csv_permissions"]
     database.employees.insert_many(documents)
@@ -155,7 +159,7 @@ def test_full_csv_omitted_department_filter_still_has_server_scope(db, rows, rol
     query = StructuredQuery(metric="avg", target="PerformanceRating")
     cells = run_query(db, query, NEW_HIRE_START, who, POLICY)
     assert cells[0].ids == {r["EmployeeNumber"] for r in population(rows, role)}
-    assert cells[0].n == (63 if role == "ordinary_hr" else 446)
+    assert cells[0].n == len(population(rows, role))   # active employees in scope
 
 
 @pytest.mark.parametrize("transform", ["T2_drop_filter", "T3_widen_scope"])
@@ -164,7 +168,7 @@ def test_full_csv_rewrites_cannot_leave_sales_department(db, rows, transform):
     who = identity("department_manager")
     cells = run_query(db, query, NEW_HIRE_START, who, POLICY)
     assert cells[0].ids == {r["EmployeeNumber"] for r in rows if r["Department"] == "Sales"}
-    assert cells[0].n == 446
+    assert cells[0].n == sum(r["Department"] == "Sales" for r in rows)
 
 
 @pytest.mark.parametrize("role", ["department_hr_manager", "department_manager", "ordinary_hr"])
@@ -211,10 +215,10 @@ def test_full_csv_four_hr_employees_mean_is_never_released(db, rows):
         {"col": "JobLevel", "op": "=", "val": 4},
     ])
     expected = [r for r in rows if r["Department"] == "Human Resources" and r["JobLevel"] == 4]
-    assert len(expected) == 4
+    assert 1 <= len(expected) < 5          # a group below k (3 in the 2026 data)
     who = identity("hr_head")
     cells = run_query(db, query, NEW_HIRE_START, who, POLICY)
-    assert cells[0].n == 4
+    assert cells[0].n == len(expected)
     assert cells[0].value == pytest.approx(mean(r["MonthlyIncome"] for r in expected))
     decision = gate.check(query, who, cells, [], {}, {**POLICY, "k_threshold": 2})
     assert decision.status == "blocked" and decision.rule == "L2.min_n"
@@ -228,7 +232,8 @@ def test_full_csv_homogeneous_performance_is_suppressed(db):
     ])
     who = identity("hr_head")
     cells = run_query(db, query, NEW_HIRE_START, who, POLICY)
-    assert len(cells) == 1 and cells[0].n == 14
+    assert len(cells) == 1 and cells[0].n >= 5   # large enough: hidden only because
+                                                 # everyone has the same rating
     assert cells[0].value == cells[0].vmin == cells[0].vmax == 3
     decision = gate.check(query, who, cells, [], {}, POLICY)
     assert decision.status == "blocked" and decision.rule == "L2.homogeneous"
@@ -242,8 +247,9 @@ def test_full_csv_new_hire_demo_values_and_cross_query_block(db):
     who = identity("department_manager")
     before = run_query(db, query, DEMO_START, who, POLICY)
     after = run_query(db, query, NEW_HIRE_START, who, POLICY)
-    assert (before[0].n, round(before[0].value, 2)) == (36, 17111.50)
-    assert (after[0].n, round(after[0].value, 2)) == (37, 16986.97)
+    # 2026 data, active employees only (Sales managers; #473 joins on Thursday)
+    assert (before[0].n, round(before[0].value, 2)) == (35, 16986.46)
+    assert after[0].n == 36
     assert after[0].ids - before[0].ids == {473}
     assert gate.check(query, who, before, [], {}, POLICY).status == "allowed"
     history = [Release(before[0].ids, "MonthlyIncome", "avg", DEMO_START, {}, "Before hire", who.user)]

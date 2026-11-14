@@ -5,6 +5,7 @@ __pycache__/
 node_modules/
 dist/
 **/data/*.csv
+!backend/data/goalkeeper_hr_2026.csv
 .DS_Store
 
 # Pre-hackathon exploration: keep out of the competition repo
