@@ -86,7 +86,7 @@ Version 2 separates business authorization from statistical release checks:
 | `vp` | Assigned department | A | — | A | A | A |
 | `hr_head` | Company | I + A | I + A | I + A | I + A | I + A |
 | `hr_salary_manager` | Company | I + A | I + A | I + A | A | A |
-| `department_hr_manager` | Assigned department | I + A | I + A | A | I + A | I + A |
+| `department_hr_manager` | Assigned department | A | A | A | A | A |
 | `department_manager` | Assigned department | A | — | A | A | I + A |
 | `ordinary_hr` | Own HR department | I | I | — | — | A |
 | `employee` | None | — | — | — | — | — |
@@ -94,6 +94,8 @@ Version 2 separates business authorization from statistical release checks:
 I means `individual`; A means `aggre_stats`. They are independent grants: Individual
 only does not imply aggregate access. Conversely, an Individual grant never exempts
 an aggregate query from the minimum cohort size or other privacy checks.
+Department HR Managers have no Individual access in any category, including basic
+information, measurement reports and performance ratings.
 
 The concrete IBM HR mapping is:
 

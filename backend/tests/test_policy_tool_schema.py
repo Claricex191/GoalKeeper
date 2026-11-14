@@ -14,7 +14,7 @@ AVAILABLE = [
     ("ceo", "aggre_stats"), ("vp", "aggre_stats"),
     ("hr_head", "aggre_stats"), ("hr_head", "individual"),
     ("hr_salary_manager", "aggre_stats"), ("hr_salary_manager", "individual"),
-    ("department_hr_manager", "aggre_stats"), ("department_hr_manager", "individual"),
+    ("department_hr_manager", "aggre_stats"),
     ("department_manager", "aggre_stats"), ("department_manager", "individual"),
     ("ordinary_hr", "aggre_stats"), ("ordinary_hr", "individual"),
 ]
@@ -63,17 +63,19 @@ def test_offered_schema_is_valid_json_schema(role, mode):
     jsonschema.Draft202012Validator.check_schema(tool_schema(POLICY, role, mode))
 
 
-def test_hr_individual_schemas_preserve_the_four_distinct_grants():
+def test_hr_individual_schemas_preserve_the_three_distinct_grants():
     assert {"Age", "StockOptionLevel", "MonthlyIncome", "JobSatisfaction", "PerformanceRating"} <= fields("hr_head")
     salary = fields("hr_salary_manager")
     assert {"Age", "StockOptionLevel", "MonthlyIncome"} <= salary
     assert {"JobSatisfaction", "PerformanceRating"}.isdisjoint(salary)
-    department = fields("department_hr_manager")
-    assert {"Age", "StockOptionLevel", "JobSatisfaction", "PerformanceRating"} <= department
-    assert "MonthlyIncome" not in department
     ordinary = fields("ordinary_hr")
     assert {"Age", "Over18", "StockOptionLevel", "YearsAtCompany"} <= ordinary
     assert {"MonthlyIncome", "JobSatisfaction", "PerformanceRating"}.isdisjoint(ordinary)
+
+
+def test_department_hr_manager_aggregate_schema_preserves_all_five_categories():
+    assert {"YearsAtCompany", "Age", "StockOptionLevel", "MonthlyIncome",
+            "JobSatisfaction", "PerformanceRating"} <= targets("department_hr_manager")
 
 
 def test_department_manager_individual_schema_contains_only_performance():
@@ -117,6 +119,7 @@ def test_ordinary_hr_empty_filter_schema_is_valid_and_cannot_supply_real_filters
 @pytest.mark.parametrize("role, mode", [
     ("employee", "aggre_stats"), ("employee", "individual"),
     ("ceo", "individual"), ("vp", "individual"),
+    ("department_hr_manager", "individual"),
     ("nobody", "aggre_stats"), ("manager", "aggre_stats"),
 ])
 def test_roles_without_access_receive_no_tool_schema(role, mode):
