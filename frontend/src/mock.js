@@ -4,11 +4,11 @@
 // Shapes follow ../API.md exactly, so switching to the real backend changes nothing.
 
 const USERS = [
-  { user: "mgr_1", role: "manager", team: "sales", display_name: "Manager 1 (Sales)" },
-  { user: "mgr_2", role: "manager", team: "sales", display_name: "Manager 2 (Sales)" },
-  { user: "mgr_3", role: "manager", team: "rnd", display_name: "Manager 3 (R&D)" },
-  { user: "mgr_4", role: "manager", team: "hr", display_name: "Manager 4 (HR dept.)" },
-  { user: "hr_1", role: "hr", team: "hr", display_name: "HR analyst / reviewer" },
+  { user: "mgr_1", role: "department_manager", team: "sales", departments: ["Sales"], display_name: "Manager 1 (Sales)" },
+  { user: "mgr_2", role: "department_manager", team: "sales", departments: ["Sales"], display_name: "Manager 2 (Sales)" },
+  { user: "mgr_3", role: "department_manager", team: "rnd", departments: ["Research & Development"], display_name: "Manager 3 (R&D)" },
+  { user: "mgr_4", role: "department_manager", team: "hr", departments: ["Human Resources"], display_name: "Manager 4 (HR dept.)" },
+  { user: "hr_1", role: "hr_head", team: "hr", departments: ["Human Resources"], display_name: "HR Head / reviewer" },
 ];
 const DEMO_START = Date.UTC(2026, 10, 9, 9, 0); // Mon 2026-11-09 09:00 UTC
 const DAY = 86400000;
@@ -78,6 +78,12 @@ async function chat(userId, { message, memory }) {
   }
   const s = SCENARIOS[key];
   const base = { tool: "query_hr", memory_on: memory, suppressed: [], hints: [] };
+  const department = s.query.filters.find((f) => f.col === "Department").val;
+  if (!who || (who.role !== "hr_head" && !who.departments.includes(department))) {
+    const reason = "This request is outside your authorized employee scope.";
+    return { reply: reason, trace: [{ ...base, query: s.query, status: "blocked",
+      rule: "L1.scope", evidence_text: reason, cells: [], allowed_transforms: [] }] };
+  }
   const r = s.result(day());
 
   if (memory) {

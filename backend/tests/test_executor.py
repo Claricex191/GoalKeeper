@@ -3,12 +3,14 @@ skipped otherwise. Passes `now` explicitly, so it never moves the shared demo cl
 import operator
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from app.clock import DEMO_START, NEW_HIRE_START
 from app.query.executor import QueryError, build_pipeline, run_query
-from app.schemas import StructuredQuery
+from app.policy.defaults import POLICY
+from app.schemas import Identity, StructuredQuery
+
+WHO = Identity("executor_test", "hr_head", "hr", "HR Head")
 
 CSV = Path(__file__).resolve().parents[1] / "data" / "ibm_hr.csv"
 NEW_HIRE_ID = 473
@@ -32,6 +34,7 @@ def db():
 def df():
     if not CSV.exists():
         pytest.skip("run scripts/load_data.py --dry-run to create the CSV")
+    pd = pytest.importorskip("pandas")
     d = pd.read_csv(CSV)
     low = d["Age"] // 5 * 5                     # same derivation as scripts/load_data.py
     d["AgeBand"] = low.astype(str) + "-" + (low + 4).astype(str)
@@ -50,7 +53,7 @@ def pandas_cells(df, q: StructuredQuery, now):
     out = {}
     for key, g in groups:
         key = key if isinstance(key, tuple) else (key,)
-        value = None if q.metric == "count" else getattr(g[q.target], {"avg": "mean", "sum": "sum"}[q.metric])()
+        value = None if q.metric == "count" else getattr(g[q.target], {"avg": "mean", "sum": "sum", "median": "median"}[q.metric])()
         out[key] = (set(g.EmployeeNumber), value)
     return out
 
@@ -59,6 +62,7 @@ SALES_MGR = [{"col": "Department", "op": "=", "val": "Sales"},
              {"col": "JobRole", "op": "=", "val": "Manager"}]
 QUERIES = [
     {"filters": SALES_MGR, "metric": "avg", "target": "MonthlyIncome"},
+    {"filters": SALES_MGR, "metric": "median", "target": "MonthlyIncome"},
     {"filters": SALES_MGR, "group_by": ["Gender"], "metric": "count"},
     {"filters": [{"col": "Department", "op": "=", "val": "Human Resources"},
                  {"col": "JobRole", "op": "=", "val": "Manager"}],
@@ -76,7 +80,7 @@ QUERIES = [
 @pytest.mark.parametrize("qd", QUERIES, ids=range(len(QUERIES)))
 def test_matches_pandas(db, df, qd, now):
     q = StructuredQuery(**qd)
-    got = {tuple(c.key[g] for g in q.group_by): c for c in run_query(db, q, now)}
+    got = {tuple(c.key[g] for g in q.group_by): c for c in run_query(db, q, now, WHO, POLICY)}
     want = pandas_cells(df, q, now)
     assert set(got) == set(want)
     for key, (ids, value) in want.items():
@@ -87,7 +91,7 @@ def test_matches_pandas(db, df, qd, now):
 
 def test_demo_numbers(db):
     q = StructuredQuery(filters=SALES_MGR, metric="avg", target="MonthlyIncome")
-    (mon,), (thu,) = run_query(db, q, MON), run_query(db, q, THU)
+    (mon,), (thu,) = run_query(db, q, MON, WHO, POLICY), run_query(db, q, THU, WHO, POLICY)
     assert (mon.n, round(mon.value, 2)) == (36, 17111.50)
     assert (thu.n, round(thu.value, 2)) == (37, 16986.97)
     assert thu.ids - mon.ids == {NEW_HIRE_ID}
@@ -97,18 +101,18 @@ def test_string_number_is_coerced(db):
     """LLMs often send "4" for an int column; must not silently return nothing."""
     as_str = StructuredQuery(filters=[{"col": "JobLevel", "op": "=", "val": "4"}], metric="count")
     as_int = StructuredQuery(filters=[{"col": "JobLevel", "op": "=", "val": 4}], metric="count")
-    assert run_query(db, as_str, THU)[0].ids == run_query(db, as_int, THU)[0].ids
+    assert run_query(db, as_str, THU, WHO, POLICY)[0].ids == run_query(db, as_int, THU, WHO, POLICY)[0].ids
 
 
 @pytest.mark.parametrize("qd, msg", [
-    ({"filters": [{"col": "Salary", "op": "=", "val": 1}], "metric": "count"}, "unknown column"),
-    ({"filters": [{"col": "$where", "op": "=", "val": 1}], "metric": "count"}, "invalid column"),
+    ({"filters": [{"col": "Salary", "op": "=", "val": 1}], "metric": "count"}, "not authorized"),
+    ({"filters": [{"col": "$where", "op": "=", "val": 1}], "metric": "count"}, "not authorized"),
     ({"filters": [{"col": "JobLevel", "op": "=", "val": "high"}], "metric": "count"}, "expects int"),
     ({"filters": [{"col": "JobLevel", "op": "in", "val": 4}], "metric": "count"}, "non-empty list"),
-    ({"metric": "avg", "target": "Attrition"}, "not numeric"),
-    ({"metric": "avg"}, "needs a target"),
+    ({"metric": "avg", "target": "MonthlyIncome"}, "not numeric"),
+    ({"metric": "avg"}, "not authorized"),
 ])
 def test_rejects_bad_queries(qd, msg):
-    types = {"JobLevel": int, "Attrition": str, "MonthlyIncome": int}
+    types = {"JobLevel": int, "Attrition": str, "MonthlyIncome": str}
     with pytest.raises(QueryError, match=msg):
-        build_pipeline(StructuredQuery(**qd), THU, types)
+        build_pipeline(StructuredQuery(**qd), THU, types, WHO, POLICY)

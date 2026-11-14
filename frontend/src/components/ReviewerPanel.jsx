@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
-// Demo controls (clock, simulated data change, reset) and, for the hr role,
+// Demo controls (clock, simulated data change, reset) and, for the HR Head role,
 // pending review requests.
 export default function ReviewerPanel({ me, onClockChange, onReset, onError }) {
   const [busy, setBusy] = useState(false);
@@ -10,7 +10,7 @@ export default function ReviewerPanel({ me, onClockChange, onReset, onError }) {
   const [emp, setEmp] = useState("1408");
   const [field, setField] = useState("MonthlyIncome");
   const [value, setValue] = useState("18500");
-  const isReviewer = me?.role === "hr";
+  const isReviewer = me?.role === "hr_head";
 
   const run = async (label, fn) => {
     setBusy(true);

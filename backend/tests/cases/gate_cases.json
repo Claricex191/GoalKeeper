@@ -38,11 +38,11 @@
       },
       {
         "user": "mgr_3", "team": "rnd", "date": "2026-11-12",
-        "note": "different team: mgr_1's memory does not apply (isolation)",
+        "note": "R&D manager cannot query Sales, regardless of release-memory isolation",
         "query": {"filters": [{"col": "Department", "op": "=", "val": "Sales"},
                               {"col": "JobRole", "op": "=", "val": "Manager"}],
                   "group_by": [], "metric": "avg", "target": "MonthlyIncome"},
-        "expect": "allowed"
+        "expect": "blocked", "expect_rule": "L1.scope"
       }
     ]
   },

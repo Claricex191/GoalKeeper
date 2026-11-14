@@ -5,8 +5,7 @@ then activates it via store.activate(..., approved_by=<name>).
 Same path the agent-drafted policy (app/policy/profiler.py) will use.
 Re-running creates a NEW version and retires the previous one (all in the ledger).
 
-Values below are the starting point from docs/collections.md; Suey + Wenqian adjust
-them here. Default deny: a column missing from FIELD_LABELS cannot be queried at all.
+The permissions are defined in app/policy/defaults.py and docs/collections.md. Default deny: a column missing from FIELD_LABELS cannot be queried at all.
 
 Run from backend/:
   python scripts/seed_policies.py --approved-by "<your name>"
@@ -18,65 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `app` importable
 
-from app.db import ensure_indexes, get_db  # noqa: E402
-from app.policy import store  # noqa: E402
-
-DATASET = "ibm_hr"
-
-SENSITIVE = ["MonthlyIncome", "PerformanceRating", "Attrition", "JobSatisfaction"]
-QUASI = ["Department", "JobRole", "JobLevel", "Gender", "AgeBand", "YearsAtCompany"]
-NEVER_RETURN = ["EmployeeNumber", "EmployeeCount", "Over18", "StandardHours"]
-
-# Every column in `employees` gets a label (system fields active/start_date/updated_at excluded).
-FIELD_LABELS = {
-    "EmployeeNumber": "identifier",
-    **{c: "sensitive" for c in SENSITIVE},
-    **{c: "quasi_identifier" for c in QUASI},
-    # pay-related and satisfaction fields: sensitive, but not offered as query targets yet
-    **{c: "sensitive" for c in ["DailyRate", "HourlyRate", "MonthlyRate", "PercentSalaryHike",
-                                "StockOptionLevel", "EnvironmentSatisfaction",
-                                "RelationshipSatisfaction", "WorkLifeBalance",
-                                "JobInvolvement"]},
-    # everything else: not queryable as a filter / group / target in v1
-    **{c: "other" for c in ["Age", "BusinessTravel", "DistanceFromHome", "Education",
-                            "EducationField", "EmployeeCount", "MaritalStatus",
-                            "NumCompaniesWorked", "Over18", "OverTime", "StandardHours",
-                            "TotalWorkingYears", "TrainingTimesLastYear",
-                            "YearsInCurrentRole", "YearsSinceLastPromotion",
-                            "YearsWithCurrManager"]},
-}
-
-LABEL_REASONS = {
-    "EmployeeNumber": "unique per employee",
-    "MonthlyIncome": "pay data",
-    "PerformanceRating": "performance review outcome",
-    "Attrition": "whether the person left",
-    "JobSatisfaction": "survey answer, promised anonymous",
-}
-
-POLICY = {
-    "field_labels": FIELD_LABELS,
-    "label_reasons": LABEL_REASONS,
-    "k_threshold": 5,
-    "median_threshold": 10,
-    "dominance_share": 0.6,
-    "sensitive_targets": SENSITIVE,
-    "quasi_identifiers": QUASI,
-    "never_return": NEVER_RETURN,
-    "roles": {
-        "manager":  {"targets": ["MonthlyIncome", "JobSatisfaction"], "metrics": ["count", "avg"]},
-        "hr":       {"targets": ["*"], "metrics": ["count", "sum", "avg"]},
-        "employee": {"targets": [], "metrics": ["count"]},
-    },
-    # Retention = how long a release still helps someone piece together a person.
-    # Pay stays linkable for years; survey answers roughly one survey cycle.
-    # PLACEHOLDER values: Suey + Qi Jia decide.
-    "memory": {
-        "scope": "team",                    # user | team | org
-        "retention_days": 365,              # default for targets not listed below
-        "retention_by_target": {"MonthlyIncome": 730, "PerformanceRating": 730},
-    },
-}
+from app.policy.defaults import DATASET, FIELD_LABELS, POLICY  # noqa: E402
 
 
 def check_labels_cover_data(db) -> None:
@@ -91,6 +32,9 @@ def check_labels_cover_data(db) -> None:
 
 
 if __name__ == "__main__":
+    from app.db import ensure_indexes, get_db
+    from app.policy import store
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--approved-by", required=True, help="the human approving this policy")
     args = ap.parse_args()

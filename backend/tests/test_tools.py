@@ -12,6 +12,7 @@ import pytest
 from app.agent.tools import DISPATCH, handle_query_hr, tool_specs
 from app.clock import DEMO_START, NEW_HIRE_START
 from app.policy import store
+from app.policy.defaults import POLICY
 from app.users import DEMO_USERS
 
 MON, THU = DEMO_START, NEW_HIRE_START
@@ -24,12 +25,7 @@ SALES_DEPT = {"filters": [{"col": "Department", "op": "=", "val": "Sales"}],
               "group_by": [], "metric": "avg", "target": "MonthlyIncome",
               "transform": "T3_widen_scope"}
 
-POLICY = {
-    "quasi_identifiers": ["Department", "JobRole", "Gender"],
-    "sensitive_targets": ["MonthlyIncome", "PerformanceRating"],
-    "roles": {"manager": {"targets": ["MonthlyIncome"], "metrics": ["count", "avg"]},
-              "employee": {"targets": [], "metrics": ["count"]}},
-}
+
 
 
 # --- schema: no database ----------------------------------------------------------------
@@ -44,25 +40,36 @@ def _all_objects(schema):
             yield from _all_objects(v)
 
 
-def test_schema_is_strict_compatible():
-    spec = tool_specs(POLICY, "manager")[0]
-    assert spec["strict"] is True
-    for obj in _all_objects(spec["input_schema"]):
-        assert obj["additionalProperties"] is False
-        assert set(obj["required"]) == set(obj["properties"])
-    text = json.dumps(spec)
-    for unsupported in ("minimum", "maximum", "minLength", "maxLength", "maxItems"):
-        assert unsupported not in text
+@pytest.mark.parametrize("who", [MGR1, DEMO_USERS["hr_1"], DEMO_USERS["ordinary_hr_1"]])
+def test_schema_is_strict_compatible(who):
+    specs = tool_specs(POLICY, who)
+    assert specs
+    for spec in specs:
+        assert spec["strict"] is True
+        for obj in _all_objects(spec["input_schema"]):
+            assert obj["additionalProperties"] is False
+            assert set(obj["required"]) == set(obj["properties"])
+        text = json.dumps(spec)
+        for unsupported in ("minimum", "maximum", "minLength", "maxLength", "maxItems"):
+            assert unsupported not in text
 
 
 def test_schema_is_narrowed_by_role():
-    s = store.tool_schema(POLICY, "manager")["properties"]
-    assert s["target"]["anyOf"][0]["enum"] == ["MonthlyIncome"]
-    assert s["metric"]["enum"] == ["count", "avg", "max", "min"]
-    assert s["group_by"]["items"]["enum"] == POLICY["quasi_identifiers"]
-    e = store.tool_schema(POLICY, "employee")["properties"]
-    assert e["target"]["type"] == "null" and e["metric"]["enum"] == ["count"]
-    assert store.tool_schema(POLICY, "nobody")["properties"]["metric"]["enum"] == []
+    s = store.tool_schema(POLICY, "department_manager")["properties"]
+    text = json.dumps(s)
+    for field in ("MonthlyIncome", "PerformanceRating", "YearsAtCompany"):
+        assert field in text
+    for forbidden in ("AgeBand", "StockOptionLevel", "MaritalStatus"):
+        assert forbidden not in text
+    assert {"count", "avg", "median", "max", "min"} <= set(s["metric"]["enum"])
+    assert "AgeBand" not in s["group_by"]["items"].get("enum", [])
+    ordinary = store.tool_schema(POLICY, "ordinary_hr")["properties"]
+    assert "count" not in ordinary["metric"]["enum"]
+    assert "MonthlyIncome" not in json.dumps(ordinary)
+    assert "PerformanceRating" in json.dumps(ordinary)
+    assert tool_specs(POLICY, DEMO_USERS["emp_1"]) == []
+    assert tool_specs(POLICY, "nobody") == []
+
 
 
 # --- handle_query_hr against Atlas --------------------------------------------------------
@@ -141,7 +148,7 @@ def test_extreme_is_refused_before_the_data(db, project):
 
 
 def test_bad_input_and_bad_values_come_back_as_errors(db, project):
-    out = handle_query_hr(ctx(db, project, MGR1, MON), {"metric": "median"})
+    out = handle_query_hr(ctx(db, project, MGR1, MON), {"metric": "var"})
     assert out["trace"]["status"] == "error" and "Invalid query" in out["for_llm"]["message"]
     q = {**SALES_MGR, "filters": [{"col": "JobRole", "op": ">", "val": ["a", "b"]}]}
     out = handle_query_hr(ctx(db, project, MGR1, MON), q)
